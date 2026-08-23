@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bash \
+            coreutils \
+            gcc \
+            git \
+            jq \
+            python3 \
+            util-linux
+
+      - name: Validate test harness syntax
+        run: bash -n tests/run_tests.sh
+
+      - name: Run test suite
+        run: ./tests/run_tests.sh
