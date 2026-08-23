@@ -1,0 +1,15 @@
+# AgentGuard runtime state and local reference material
+.agentguard/
+.baseline/
+
+# Claude Code machine-local settings
+.claude/settings.local.json
+
+# Editor and operating-system artifacts
+*.swp
+*~
+.DS_Store
+
+# Python cache artifacts
+__pycache__/
+*.py[cod]

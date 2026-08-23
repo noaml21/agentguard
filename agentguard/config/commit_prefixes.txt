@@ -1,0 +1,9 @@
+# Allowed Conventional-Commit-style types for AgentGuard.
+feat
+fix
+docs
+refactor
+test
+chore
+perf
+ci

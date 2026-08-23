@@ -1,0 +1,29 @@
+# Environment files likely to contain real secrets; examples and samples remain allowed.
+(^|/)\.env($|\.(local|development|production|staging|test)(\.local)?$)
+
+# Git repository internals, without matching files such as .gitignore.
+(^|/)\.git(/|$)
+
+# SSH configuration and key directories.
+(^|/)\.ssh(/|$)
+
+# Common private-key file extensions.
+(^|/)[^/]+\.(pem|key|p12|pfx)$
+
+# Common OpenSSH private-key filenames.
+(^|/)(id_rsa|id_dsa|id_ecdsa|id_ed25519)$
+
+# Common per-user credential configuration files.
+(^|/)\.(netrc|npmrc|pypirc)$
+
+# Guardrail self-protection: AgentGuard runtime state and audit data.
+^\.agentguard(/|$)
+
+# Guardrail self-protection: security hooks, shared code, and policy configuration.
+^agentguard/(hooks|lib|config)(/|$)
+
+# Guardrail self-protection: Claude Code hook wiring, without blocking all of .claude.
+^\.claude/settings(\.local)?\.json$
+
+# Guardrail self-protection: the exact sequential hook dispatcher entrypoint.
+^scripts/run_hook_chain\.sh$

@@ -1,0 +1,25 @@
+# Destructive recursive deletion with combined or split force/recursive flags.
+(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+-[^[:space:]]*([rR][^[:space:]]*[fF]|[fF][^[:space:]]*[rR])[^[:space:]]*([[:space:]]|$)
+(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+(-[^[:space:]]*[rR][^[:space:]]*[[:space:]]+-[^[:space:]]*[fF][^[:space:]]*|-[^[:space:]]*[fF][^[:space:]]*[[:space:]]+-[^[:space:]]*[rR][^[:space:]]*)([[:space:]]|$)
+
+# Filesystem formatting and swap initialization.
+(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?(mkfs(\.[[:alnum:]_+-]+)?|mkswap)([[:space:]]|$)
+
+# Raw writes to common block-device names.
+(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?dd[[:space:]]+.*of=/dev/(sd[a-z]|vd[a-z]|xvd[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)[[:alnum:]]*([[:space:]]|$)
+
+# Host shutdown and restart commands.
+(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?(shutdown|reboot|poweroff|halt)([[:space:]]|$)
+
+# Destructive Git cleanup and working-tree reset.
+(^[[:space:]]*|[;&|][[:space:]]*)git[[:space:]]+clean([[:space:]]+[^;&|]*)?[[:space:]]+-[^[:space:]]*f[^[:space:]]*([[:space:]]|$)
+(^[[:space:]]*|[;&|][[:space:]]*)git[[:space:]]+reset[[:space:]]+--hard([[:space:]]|$)
+
+# Force-pushing rewritten Git history.
+(^[[:space:]]*|[;&|][[:space:]]*)git[[:space:]]+push([[:space:]]+[^;&|]*)?[[:space:]]+(--force(-with-lease)?|-f)([[:space:]]|$)
+
+# Canonical shell fork-bomb syntax.
+:[[:space:]]*\(\)[[:space:]]*\{[[:space:]]*:[[:space:]]*\|[[:space:]]*:[[:space:]]*&[[:space:]]*\}[[:space:]]*;[[:space:]]*:
+
+# Remote content piped directly into a shell.
+(^[[:space:]]*|[;&|][[:space:]]*)(curl|wget)[[:space:]][^|]*\|[[:space:]]*(sudo[[:space:]]+)?(/usr/bin/|/bin/)?(ba|z|k)?sh([[:space:]]|$)
