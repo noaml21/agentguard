@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "lifecycle.h"
 #include "options.h"
+#include "sandbox.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -33,5 +34,27 @@ int main(int argc, char **argv)
         return AG_EXIT_SETUP_FAILURE;
     }
 
-    return lifecycle_run(&opts);
+    enum ag_mode mode = opts.degraded ? AG_MODE_DEGRADED : AG_MODE_STRICT;
+    struct ag_negotiation neg;
+    int neg_rc = ag_negotiate(mode, &neg);
+
+    if (opts.print_status) {
+        ag_print_status(1, &neg, 0, opts.json);
+        return 0;
+    }
+
+    /* Strict mode: a required layer unavailable on this kernel refuses the run
+     * before fork -- the target never executes (fail-closed, no silent downgrade). */
+    if (neg_rc != 0) {
+        ag_warnf("strict mode: required enforcement layer(s) unavailable on this "
+                 "kernel; refusing to run. Use --status to inspect, or --degraded "
+                 "to run with reduced guarantees.");
+        ag_print_status(2, &neg, 0, opts.json);
+        return AG_EXIT_SETUP_FAILURE;
+    }
+
+    if (opts.verbose && neg.missing_mask)
+        ag_print_status(2, &neg, 0, opts.json);
+
+    return lifecycle_run(&opts, &neg);
 }

@@ -31,11 +31,13 @@ check-asan:
 	$(MAKE) clean
 	$(MAKE) all CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
 	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/run_tests.sh
+	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/contract_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 python3 tests/tty_test.py
 	$(MAKE) clean
 
 check: all
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/run_tests.sh
+	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/contract_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) python3 tests/tty_test.py
 
 clean:

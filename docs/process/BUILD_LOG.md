@@ -89,3 +89,28 @@ Verified:
 Privilege model implemented: refuses EUID 0 (exit 125); never setuid; no root override.
 Note: shell-target WINCH traps are deferred by the shell, so the WINCH test uses a Python
 target (kernel delivers WINCH to the foreground group regardless).
+
+## 2026-09-24 — Session 1: Phase 3 (fail-closed setup contract)
+
+Added `sandbox` module (`sandbox.h/.c`): enforcement-layer negotiation tracking
+AVAILABLE (parent probe) / REQUESTED / REQUIRED / APPLIED (child, reported back), a
+structured report protocol over the existing pipe (SETUP_OK+applied_mask / SETUP_FAIL /
+EXEC_FAIL), strict (default) vs `--degraded` modes, and `--status`/`--json`/`--verbose`.
+First real layer registered: `no_new_privs` (prctl PR_SET_NO_NEW_PRIVS). Phase 4+ append
+Landlock/seccomp to the same table; enforcement plugs into `ag_apply_layers` in the child.
+
+Test seams (documented, test-only): `AGENTGUARD_TEST_UNAVAIL=<layer,...>` forces a probe
+to report unavailable; `AGENTGUARD_TEST_FAIL=<layer,...>` forces apply() to fail. These
+let the contract be tested deterministically on any kernel (real availability is
+kernel-dependent).
+
+Verified (`tests/contract_test.sh`, 12 tests; also under ASan/UBSan):
+- available+applied: target shows `NoNewPrivs: 1`.
+- strict + unavailable required layer: exit 125, **target never ran**.
+- strict + apply failure: exit 125, **target never ran**.
+- degraded + unavailable: exit 0, runs with `NoNewPrivs: 0` (layer reported not applied).
+- no silent downgrade: strict refuses exactly where degraded runs.
+- `--status` (exit 0, lists layers), `--status --json` (valid via jq), degraded status.
+
+Full suite green: `make check` = 18 runner + 12 contract + 5 pty = 35 tests;
+`make check-asan` all 35 clean under ASan+UBSan.

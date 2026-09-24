@@ -85,9 +85,11 @@ static void terminate_group(pid_t pgid, pid_t main_pid, int *main_done,
 }
 
 /* Child side: new process group, default signal disposition, FD sanitation,
- * then exec. Never returns on success. */
-static void child_exec(const struct options *opts, int report_fd) __attribute__((noreturn));
-static void child_exec(const struct options *opts, int report_fd)
+ * enforcement layers, then exec. Never returns on success. */
+static void child_exec(const struct options *opts, const struct ag_negotiation *neg,
+                       int report_fd) __attribute__((noreturn));
+static void child_exec(const struct options *opts, const struct ag_negotiation *neg,
+                       int report_fd)
 {
     /* Restore default handlers and unblock everything so the target sees normal
      * signal behavior. */
@@ -110,20 +112,25 @@ static void child_exec(const struct options *opts, int report_fd)
         .report_fd = report_fd,
     };
     if (fdsan_apply(&pol) != 0) {
-        int err = errno;
-        (void)ag_write_all(report_fd, &err, sizeof err);
+        struct ag_report rep = {.tag = AG_REPORT_SETUP_FAIL, .layer = -1,
+                                .err = errno, .applied_mask = 0};
+        (void)ag_write_all(report_fd, &rep, sizeof rep);
         _exit(AG_EXIT_SETUP_FAILURE);
     }
 
-    /* Later phases install Landlock/seccomp here, immediately before exec. */
+    /* Enforcement layers install here, immediately before exec. On failure the
+     * child reports and exits; the target never runs (fail-closed contract). */
+    if (ag_apply_layers(neg, report_fd) != 0)
+        _exit(AG_EXIT_SETUP_FAILURE);
 
     execvp(opts->argv[0], opts->argv);
-    int err = errno; /* exec failed */
-    (void)ag_write_all(report_fd, &err, sizeof err);
+    struct ag_report rep = {.tag = AG_REPORT_EXEC_FAIL, .layer = -1,
+                            .err = errno, .applied_mask = neg->requested_mask};
+    (void)ag_write_all(report_fd, &rep, sizeof rep);
     _exit(AG_EXIT_EXEC_FAILURE);
 }
 
-int lifecycle_run(const struct options *opts)
+int lifecycle_run(const struct options *opts, const struct ag_negotiation *neg)
 {
     /* Orphaned descendants reparent to us so we can reap the whole tree. */
     if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0)
@@ -158,7 +165,7 @@ int lifecycle_run(const struct options *opts)
     }
     if (child == 0) {
         close(report[0]);
-        child_exec(opts, report[1]);
+        child_exec(opts, neg, report[1]);
         _exit(AG_EXIT_EXEC_FAILURE); /* unreachable */
     }
 
@@ -225,12 +232,24 @@ int lifecycle_run(const struct options *opts)
         }
     }
 
-    /* Check for an exec/setup failure report from the child. */
-    int report_err = 0;
+    /* Drain the child's setup reports. The child writes at most a SETUP_OK (with
+     * the applied mask) followed possibly by an EXEC_FAIL, or a single SETUP_FAIL. */
+    struct ag_report rep = {.tag = 0, .layer = -1, .err = 0, .applied_mask = 0};
+    int have_setup_fail = 0, have_exec_fail = 0;
+    uint32_t applied_mask = 0;
     if (fcntl(report[0], F_SETFL, O_NONBLOCK) == 0) {
-        int buf;
-        if (ag_read_all(report[0], &buf, sizeof buf) == (long)sizeof buf)
-            report_err = buf;
+        struct ag_report r;
+        while (ag_read_all(report[0], &r, sizeof r) == (long)sizeof r) {
+            if (r.tag == AG_REPORT_SETUP_OK) {
+                applied_mask = r.applied_mask;
+            } else if (r.tag == AG_REPORT_SETUP_FAIL) {
+                have_setup_fail = 1;
+                rep = r;
+            } else if (r.tag == AG_REPORT_EXEC_FAIL) {
+                have_exec_fail = 1;
+                rep = r;
+            }
+        }
     }
     close(report[0]);
 
@@ -245,11 +264,19 @@ int lifecycle_run(const struct options *opts)
         close(sfd);
     sigprocmask(SIG_SETMASK, &old, NULL);
 
-    if (report_err != 0) {
-        errno = report_err;
+    if (have_setup_fail) {
+        errno = rep.err;
+        ag_warnf("required layer %s failed to apply: %s",
+                 ag_layer_name((enum ag_layer)rep.layer), strerror(rep.err));
+        return AG_EXIT_SETUP_FAILURE;
+    }
+    if (have_exec_fail) {
+        errno = rep.err;
         ag_warn_errno(opts->argv[0]);
         return AG_EXIT_EXEC_FAILURE;
     }
+    if (opts->verbose)
+        ag_print_status(2, neg, applied_mask, opts->json);
     if (timed_out)
         return AG_EXIT_TIMEOUT;
     if (WIFEXITED(main_status))

@@ -19,6 +19,13 @@ void options_usage(const char *prog)
         "  --timeout SECONDS   Terminate the process tree after SECONDS (float ok).\n"
         "  --keep-fd N         Preserve inherited file descriptor N in the target\n"
         "                      (besides stdin/stdout/stderr). May repeat.\n"
+        "  --strict            Refuse to run unless every required layer applies\n"
+        "                      (default).\n"
+        "  --degraded          Run even if a required layer is unavailable, and\n"
+        "                      report exactly which guarantees are missing.\n"
+        "  --status            Print the enforcement-layer table and exit.\n"
+        "  --json              With --status, emit machine-readable JSON.\n"
+        "  --verbose           Print applied enforcement layers to stderr.\n"
         "  --version           Print version and exit.\n"
         "  --help              Print this help and exit.\n",
         prog);
@@ -70,6 +77,26 @@ int options_parse(int argc, char **argv, struct options *opts)
             opts->show_version = 1;
             return 0;
         }
+        if (strcmp(arg, "--strict") == 0) {
+            opts->degraded = 0;
+            continue;
+        }
+        if (strcmp(arg, "--degraded") == 0) {
+            opts->degraded = 1;
+            continue;
+        }
+        if (strcmp(arg, "--status") == 0) {
+            opts->print_status = 1;
+            continue;
+        }
+        if (strcmp(arg, "--json") == 0) {
+            opts->json = 1;
+            continue;
+        }
+        if (strcmp(arg, "--verbose") == 0) {
+            opts->verbose = 1;
+            continue;
+        }
         if (strcmp(arg, "--timeout") == 0) {
             if (++i >= argc) {
                 ag_warnf("--timeout requires an argument");
@@ -114,6 +141,9 @@ int options_parse(int argc, char **argv, struct options *opts)
     }
 
     if (i >= argc) {
+        /* --status may be used without a target to inspect this host. */
+        if (opts->print_status)
+            return 0;
         ag_warnf("no command given after '--'");
         return -1;
     }

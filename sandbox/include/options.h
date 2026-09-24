@@ -16,6 +16,10 @@ struct options {
     long timeout_ms;     /* wall-clock deadline for the tree; 0 = none */
     int keep_fds[AG_MAX_KEEP_FDS];
     size_t nkeep;
+    int degraded;        /* AG_MODE_DEGRADED when set, else strict */
+    int verbose;         /* print negotiation + applied layers to stderr */
+    int print_status;    /* print the layer table and exit without running */
+    int json;            /* machine-readable status output */
     int show_help;
     int show_version;
 };
