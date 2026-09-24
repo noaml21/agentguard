@@ -2,6 +2,9 @@
 .agentguard/
 .baseline/
 
+# V2 build output
+build/
+
 # Claude Code machine-local settings
 .claude/settings.local.json
 
