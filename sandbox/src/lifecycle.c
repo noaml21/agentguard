@@ -118,9 +118,21 @@ static void child_exec(const struct options *opts, const struct ag_negotiation *
         _exit(AG_EXIT_SETUP_FAILURE);
     }
 
+    /* Build the filesystem/network policy from options (Phase 8 will also load a
+     * policy file into this same struct). */
+    struct ag_policy fspol;
+    memset(&fspol, 0, sizeof fspol);
+    fspol.workspace = opts->workspace ? opts->workspace : ".";
+    fspol.no_default_reads = opts->no_default_reads;
+    for (size_t i = 0; i < opts->nread && fspol.nread < AG_MAX_PATHS; i++)
+        fspol.read_paths[fspol.nread++] = opts->read_paths[i];
+    for (size_t i = 0; i < opts->nwrite && fspol.nwrite < AG_MAX_PATHS; i++)
+        fspol.write_paths[fspol.nwrite++] = opts->write_paths[i];
+    ag_policy_add_default_reads(&fspol);
+
     /* Enforcement layers install here, immediately before exec. On failure the
      * child reports and exits; the target never runs (fail-closed contract). */
-    if (ag_apply_layers(neg, report_fd) != 0)
+    if (ag_apply_layers(neg, &fspol, report_fd) != 0)
         _exit(AG_EXIT_SETUP_FAILURE);
 
     execvp(opts->argv[0], opts->argv);

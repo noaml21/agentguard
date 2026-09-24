@@ -11,6 +11,7 @@ BUILDDIR := build
 
 SRC := $(wildcard src/*.c)
 OBJ := $(patsubst src/%.c,$(BUILDDIR)/%.o,$(SRC))
+DEP := $(OBJ:.o=.d)
 BIN := $(BUILDDIR)/agentguard-run
 
 .PHONY: all clean check check-asan
@@ -20,8 +21,12 @@ all: $(BIN)
 $(BIN): $(OBJ)
 	$(CC) $(CSTD) $(WARN) $(CFLAGS) $(CPPFLAGS) -o $@ $(OBJ)
 
+# -MMD -MP generates per-object header dependency files so a header change
+# rebuilds every dependent object (avoids stale-object ABI mismatches).
 $(BUILDDIR)/%.o: src/%.c | $(BUILDDIR)
-	$(CC) $(CSTD) $(WARN) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
+	$(CC) $(CSTD) $(WARN) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c -o $@ $<
+
+-include $(DEP)
 
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
@@ -32,12 +37,14 @@ check-asan:
 	$(MAKE) all CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
 	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/run_tests.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/contract_test.sh
+	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/landlock_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 python3 tests/tty_test.py
 	$(MAKE) clean
 
 check: all
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/run_tests.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/contract_test.sh
+	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/landlock_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) python3 tests/tty_test.py
 
 clean:

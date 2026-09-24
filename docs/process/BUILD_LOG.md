@@ -114,3 +114,28 @@ Verified (`tests/contract_test.sh`, 12 tests; also under ASan/UBSan):
 
 Full suite green: `make check` = 18 runner + 12 contract + 5 pty = 35 tests;
 `make check-asan` all 35 clean under ASan+UBSan.
+
+## 2026-09-24 — Session 1: Phase 4 (Landlock filesystem enforcement)
+
+Added `landlock.{h,c}` (runtime ABI detection via landlock_create_ruleset(NULL,0,VERSION);
+ruleset built from handled rights for the running ABI; path_beneath rules bound to O_PATH
+inodes; restrict_self) and `policy.{h,c}` (workspace + read/write paths + default system
+read set). Registered `AG_LAYER_LANDLOCK_FS` (required, applied after no_new_privs). New
+options: `--workspace`, `--allow-read`, `--allow-write`, `--no-default-reads`.
+
+Design decisions recorded: IOCTL_DEV (ABI5) intentionally NOT handled (keeps interactive
+TTY working; documented). Landlock depends on no_new_privs → enum order enforces it. In
+degraded mode, unavailable required layers are relaxed but apply-failures still fail closed.
+
+Bug fixed during Phase 4: the Makefile lacked header-dependency tracking, so an incremental
+build linked stale objects compiled against an older struct layout → segfault (only in the
+non-sanitized -O2 build; a full/ASan rebuild was fine). Root cause, not symptom: added
+`-MMD -MP` + `-include $(DEP)`. Verified clean rebuild works.
+
+Verified (`tests/landlock_test.sh`, 14 tests, kernel-feature tagged, also under ASan/UBSan):
+permitted (workspace read/write, /etc read, create/rename/remove); denied (write outside
+via absolute/relative/python/grandchild; read outside via absolute/python; symlink escape
+read; symlinked-dir write; path replaced by symlink; listing $HOME). These are the same
+semantic effects V1 bypassed in Phase 1, now denied by the kernel regardless of spelling.
+
+Full suite: `make check` = 18+12+14+5 = 49 tests green; `make check-asan` all 49 clean.

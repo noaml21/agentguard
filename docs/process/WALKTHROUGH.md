@@ -72,3 +72,31 @@ once it reparents to the subreaper, but it may not be *signalled*. Phase 7's cgr
 
 Only the child restricts itself. The supervisor must remain able to signal and reap the
 whole tree and restore the terminal, so it never installs Landlock/seccomp on itself.
+
+## Landlock filesystem ruleset (Phase 4)
+
+Landlock is default-deny *per handled access right*. `ll_restrict_fs` creates a ruleset
+declaring the filesystem rights it will enforce (execute, read, write, remove, make-*,
+plus REFER on ABI≥2 and TRUNCATE on ABI≥3 — chosen from the runtime ABI, not hardcoded),
+then adds `path_beneath` rules:
+
+- read+execute on the default system locations (`/usr`, `/lib*`, `/etc`, `/proc`, `/dev`, …)
+  and any `--allow-read` paths, so ordinary programs run;
+- full read+write+manage on the `--workspace` root and any `--allow-write` paths;
+- read+write on a small set of device nodes (`/dev/null`, tty, pts, urandom, …).
+
+Every rule is added against an `O_PATH` descriptor opened while still unrestricted, so the
+rule binds to a concrete **inode**. That is the path-integrity guarantee: a symlink or a
+later path swap cannot redirect enforcement, because the kernel resolves the real object at
+access time and compares it to the inode-bound rules — not to the string we checked.
+`landlock_restrict_self` then applies the ruleset to the process and, by inheritance, to
+every descendant, so `python -c`, `sh -c`, and grandchildren are all bound identically.
+
+We deliberately do **not** handle IOCTL_DEV (ABI≥5): restricting device ioctls would break
+the inherited interactive TTY, and it is a hardening extra outside the Core FS guarantee.
+
+Dependency note: `landlock_restrict_self` requires `no_new_privs` for an unprivileged
+process, which is why `no_new_privs` is layer 0 and applied first. In degraded mode we relax
+required layers that are *unavailable*, but a layer that is available yet *fails to apply*
+still fails closed — so forcing `no_new_privs` off also refuses Landlock rather than running
+with a broken cage.

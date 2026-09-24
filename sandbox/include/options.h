@@ -8,6 +8,8 @@
 
 #include <stddef.h>
 
+#include "policy.h"
+
 #define AG_MAX_KEEP_FDS 64
 
 struct options {
@@ -16,6 +18,12 @@ struct options {
     long timeout_ms;     /* wall-clock deadline for the tree; 0 = none */
     int keep_fds[AG_MAX_KEEP_FDS];
     size_t nkeep;
+    const char *workspace;               /* writable root; default cwd */
+    const char *read_paths[AG_MAX_PATHS];
+    size_t nread;
+    const char *write_paths[AG_MAX_PATHS];
+    size_t nwrite;
+    int no_default_reads;                /* drop the system read allowlist */
     int degraded;        /* AG_MODE_DEGRADED when set, else strict */
     int verbose;         /* print negotiation + applied layers to stderr */
     int print_status;    /* print the layer table and exit without running */

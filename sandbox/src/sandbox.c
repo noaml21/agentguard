@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 #include "sandbox.h"
+#include "landlock.h"
+#include "policy.h"
 #include "util.h"
 
 #include <errno.h>
@@ -17,17 +19,28 @@ static int probe_no_new_privs(void)
     return prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) >= 0;
 }
 
-static int apply_no_new_privs(void)
+static int apply_no_new_privs(const struct ag_policy *pol)
 {
+    (void)pol;
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
         return -1;
     return prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1 ? 0 : (errno = EPERM, -1);
 }
 
+static int probe_landlock_fs(void)
+{
+    return ll_abi() >= 1;
+}
+
+static int apply_landlock_fs(const struct ag_policy *pol)
+{
+    return ll_restrict_fs(pol);
+}
+
 struct layer_def {
     const char *name;
     int (*probe)(void);
-    int (*apply)(void);
+    int (*apply)(const struct ag_policy *pol);
     int required_by_default;
 };
 
@@ -36,6 +49,12 @@ static const struct layer_def kLayers[AG_LAYER_COUNT] = {
         .name = "no_new_privs",
         .probe = probe_no_new_privs,
         .apply = apply_no_new_privs,
+        .required_by_default = 1,
+    },
+    [AG_LAYER_LANDLOCK_FS] = {
+        .name = "landlock_fs",
+        .probe = probe_landlock_fs,
+        .apply = apply_landlock_fs,
         .required_by_default = 1,
     },
 };
@@ -105,7 +124,8 @@ int ag_negotiate(enum ag_mode mode, struct ag_negotiation *neg)
 
 /* ---- Apply (child) ------------------------------------------------------ */
 
-int ag_apply_layers(const struct ag_negotiation *neg, int report_fd)
+int ag_apply_layers(const struct ag_negotiation *neg, const struct ag_policy *pol,
+                    int report_fd)
 {
     struct ag_report rep = {.tag = 0, .layer = -1, .err = 0, .applied_mask = 0};
 
@@ -119,7 +139,7 @@ int ag_apply_layers(const struct ag_negotiation *neg, int report_fd)
             errno = EPERM;
             rc = -1;
         } else {
-            rc = kLayers[i].apply ? kLayers[i].apply() : (errno = ENOSYS, -1);
+            rc = kLayers[i].apply ? kLayers[i].apply(pol) : (errno = ENOSYS, -1);
         }
         if (rc != 0) {
             rep.tag = AG_REPORT_SETUP_FAIL;

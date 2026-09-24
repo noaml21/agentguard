@@ -17,9 +17,12 @@
 
 #include <stdint.h>
 
+#include "policy.h"
+
 enum ag_layer {
-    AG_LAYER_NO_NEW_PRIVS = 0,
-    /* Phase 4+ append: AG_LAYER_LANDLOCK_FS, AG_LAYER_SECCOMP, ... */
+    AG_LAYER_NO_NEW_PRIVS = 0, /* must stay first: prerequisite for the rest */
+    AG_LAYER_LANDLOCK_FS,      /* filesystem enforcement (Phase 4) */
+    /* Phase 5+ append: AG_LAYER_SECCOMP, ... */
     AG_LAYER_COUNT
 };
 
@@ -62,10 +65,13 @@ const char *ag_layer_name(enum ag_layer layer);
 int ag_negotiate(enum ag_mode mode, struct ag_negotiation *neg);
 
 /* Child side: apply every requested layer in order, recording applied ones.
+ * Layers are applied in enum order, which encodes the required setup sequence
+ * (no_new_privs before Landlock/seccomp). pol supplies filesystem/network rules.
  * On the first failure, writes AG_REPORT_SETUP_FAIL and returns -1 (caller must
  * _exit). On success, writes AG_REPORT_SETUP_OK with the applied mask and
  * returns 0 (caller proceeds to exec). report_fd is the write end of the pipe. */
-int ag_apply_layers(const struct ag_negotiation *neg, int report_fd);
+int ag_apply_layers(const struct ag_negotiation *neg, const struct ag_policy *pol,
+                    int report_fd);
 
 /* Human-readable status table to the given stream. applied_mask may be 0 if not
  * yet known (pre-run). */

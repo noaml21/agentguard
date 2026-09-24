@@ -29,17 +29,21 @@ rc=$?
 assert_eq "strict apply-failure refuses (exit 125)" 125 "$rc"
 assert_eq "strict apply-failure: target did not run" "" "$out"
 
-# 4. Degraded + unavailable -> runs, but the layer is NOT applied (reported).
-out="$(AGENTGUARD_TEST_UNAVAIL=no_new_privs "$RUN" --degraded -- \
-       sh -c 'grep -o "NoNewPrivs:.*" /proc/self/status' 2>/dev/null)"
+# 4. Degraded + unavailable -> runs with the remaining layers applied.
+#    We force landlock_fs unavailable (it has no dependents; no_new_privs is a
+#    prerequisite for Landlock, so forcing *that* unavailable would correctly
+#    also break Landlock -- a real dependency, not a test artifact).
+out="$(AGENTGUARD_TEST_UNAVAIL=landlock_fs "$RUN" --degraded -- \
+       sh -c 'echo TARGET_RAN; grep -o "NoNewPrivs:.*" /proc/self/status' 2>/dev/null)"
 rc=$?
 assert_eq "degraded unavailable runs (exit 0)" 0 "$rc"
-assert_eq "degraded unavailable: layer not applied" "NoNewPrivs:	0" "$out"
+[[ "$out" == *"TARGET_RAN"* && "$out" == *"NoNewPrivs:	1"* ]] \
+    && pass "degraded: remaining layers still applied" \
+    || fail "degraded remaining layers" "$out"
 
 # 5. No silent downgrade: strict never runs the target with a missing layer.
-#    (Combines 2+4: strict rc must differ from degraded rc for the same env.)
-strict_ran="$(AGENTGUARD_TEST_UNAVAIL=no_new_privs "$RUN" -- true 2>/dev/null; echo $?)"
-degraded_ran="$(AGENTGUARD_TEST_UNAVAIL=no_new_privs "$RUN" --degraded -- true 2>/dev/null; echo $?)"
+strict_ran="$(AGENTGUARD_TEST_UNAVAIL=landlock_fs "$RUN" -- true 2>/dev/null; echo $?)"
+degraded_ran="$(AGENTGUARD_TEST_UNAVAIL=landlock_fs "$RUN" --degraded -- true 2>/dev/null; echo $?)"
 if [[ "$strict_ran" == "125" && "$degraded_ran" == "0" ]]; then
     pass "no silent downgrade (strict refuses where degraded runs)"
 else
