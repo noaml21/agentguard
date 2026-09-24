@@ -24,4 +24,9 @@ struct ag_policy {
  * already present; respects AG_MAX_PATHS. */
 void ag_policy_add_default_reads(struct ag_policy *pol);
 
+/* Add default writable scratch locations (currently /tmp), which most dev tools
+ * (compilers, git) require. /tmp is a shared same-UID surface -- documented as a
+ * known broadening, opt out with --no-default-reads. Appends; bounded. */
+void ag_policy_add_default_writes(struct ag_policy *pol);
+
 #endif

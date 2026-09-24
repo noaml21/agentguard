@@ -139,3 +139,28 @@ read; symlinked-dir write; path replaced by symlink; listing $HOME). These are t
 semantic effects V1 bypassed in Phase 1, now denied by the kernel regardless of spelling.
 
 Full suite: `make check` = 18+12+14+5 = 49 tests green; `make check-asan` all 49 clean.
+
+## 2026-09-24 — Session 1: Phase 5 (seccomp-BPF + no_new_privs)
+
+Design comparison recorded in ARCHITECTURE (libseccomp vs hand-written cBPF -> cBPF chosen:
+no dependency, small filter). Added `seccomp.{h,c}`: runtime-built classic BPF, arch guard
+(kill on wrong arch / x32), flat EPERM deny-list from a documented SYS_* table (ptrace,
+process_vm_readv/writev, unshare, setns, mount/umount2/pivot_root/chroot/move_mount/
+open_tree/mount_setattr, init/finit/delete_module, kexec_load/file_load, reboot, bpf,
+perf_event_open, open_by_handle_at, swapon/off), default allow. Each entry commented with
+threat / why-not-needed / compat impact. Registered AG_LAYER_SECCOMP (index 2, applied last).
+
+Landlock usability fixes surfaced by running real tools under seccomp tests:
+- gcc needs /tmp for temp files -> added `ag_policy_add_default_writes` granting /tmp rw by
+  default (documented same-UID broadening; opt out with --no-default-reads). gcc now works.
+- `--allow-read <file>` failed with EINVAL because directory-only Landlock rights are
+  rejected on a regular file -> add_path now fstat()s and masks the grant to file rights for
+  non-dirs. git works with `--allow-read ~/.gitconfig`, and home stays denied otherwise.
+
+Verified (`tests/seccomp_test.sh`, 8 tests, kernel-feature tagged, also under ASan/UBSan):
+Seccomp filter mode active (Seccomp: 2); ptrace/unshare/mount return EPERM; ordinary
+compile+run and python work; descendants inherit; ptrace via libc also EPERM. Landlock test
+updated to use an explicit minimal policy so its /tmp-based "outside" is truly outside the
+writable set.
+
+Full suite: `make check` = 18+12+14+8+5 = 57 tests green; `make check-asan` all 57 clean.

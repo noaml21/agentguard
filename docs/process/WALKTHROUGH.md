@@ -100,3 +100,21 @@ process, which is why `no_new_privs` is layer 0 and applied first. In degraded m
 required layers that are *unavailable*, but a layer that is available yet *fails to apply*
 still fails closed — so forcing `no_new_privs` off also refuses Landlock rather than running
 with a broken cage.
+
+## seccomp-BPF filter (Phase 5)
+
+seccomp is installed **last**, after Landlock, so the filter never has to permit the
+setup syscalls (landlock_*, prctl, close_range). It is a hand-written classic-BPF program
+built at runtime: load `seccomp_data.arch` and kill if it isn't the arch we compiled for
+(this blocks `int 0x80` / wrong-ABI syscall-number confusion), reject the x86_64 x32 ABI,
+then walk a deny-list — two instructions per entry (`if nr == X return EPERM`) — and default
+to allow.
+
+It is **default-allow**, not default-deny: a coding agent legitimately uses a vast,
+open-ended set of syscalls, so an allow-list would break real work constantly. Landlock is
+the filesystem boundary; seccomp's job is to close the same-UID and escape vectors Landlock
+does not cover — `ptrace`/`process_vm_*` (inspect or modify other processes), namespace and
+mount manipulation (`unshare`, `setns`, `mount`, `pivot_root`, `chroot`, …), kernel/module/
+reboot, `bpf`, `perf_event_open`, and `open_by_handle_at`. Denied calls return `EPERM` so a
+program gets a clean, handleable error rather than being killed. The filter is inherited by
+every `fork`/`exec` descendant, so the restriction cannot be shed by spawning a child.

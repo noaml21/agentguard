@@ -129,6 +129,7 @@ static void child_exec(const struct options *opts, const struct ag_negotiation *
     for (size_t i = 0; i < opts->nwrite && fspol.nwrite < AG_MAX_PATHS; i++)
         fspol.write_paths[fspol.nwrite++] = opts->write_paths[i];
     ag_policy_add_default_reads(&fspol);
+    ag_policy_add_default_writes(&fspol);
 
     /* Enforcement layers install here, immediately before exec. On failure the
      * child reports and exits; the target never runs (fail-closed contract). */

@@ -87,13 +87,30 @@ The runner re-probes at every start; nothing above is hardcoded.
 Invariant: no target code runs before step 8, and step 8 is reached only if every
 required layer reported success.
 
-## seccomp implementation choice
+## seccomp implementation choice (Phase 5, decided)
 
-To be finalized in Phase 5. Current decision: hand-written classic BPF with
-`linux/filter.h` / `linux/seccomp.h`, because libseccomp is not installed and installing
-it is a host change, and the Core filter is small (arch check, a short deny list, and
-argument checks on `socket` family). The filter must stay readable (macro table, one
-rule per line) and be tested deterministically.
+Options compared:
+
+| | libseccomp | hand-written classic BPF |
+|---|---|---|
+| Security | mature, well-audited rule compiler | small surface, but we own correctness |
+| Dependency/portability | needs `libseccomp-dev` — **absent here**, installing it is a host change | none; only kernel UAPI headers |
+| Readability | high-level API | low-level, but our filter is a flat deny-list |
+| Testability | same (effect tests) | same |
+| Maintenance | external version coupling | a single ~80-line table we control |
+
+**Decision: hand-written classic BPF.** libseccomp headers are not installed and adding
+them is a host change; the Core filter is intentionally small — an arch/x32 guard plus a
+flat deny-list built at runtime from a `SYS_*` table (two BPF instructions per entry). This
+keeps the whole filter readable in one file and adds no dependency. If the deny-list ever
+grew into argument-heavy, arch-specific rules, libseccomp would become the better trade.
+
+The filter is **default-allow with a targeted deny-list** (returns `EPERM`), not
+default-deny: a coding agent runs a huge, open-ended set of ordinary syscalls, so an
+allow-list would be brittle and constantly break real work, while the isolation-relevant
+dangerous syscalls are a short, stable set. Landlock (not seccomp) is the primary
+filesystem boundary; seccomp closes same-UID/escape vectors Landlock does not cover.
+Installed **last** (after Landlock) so the filter never has to permit setup syscalls.
 
 ## Process lifecycle
 

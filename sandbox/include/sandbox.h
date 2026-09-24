@@ -22,7 +22,8 @@
 enum ag_layer {
     AG_LAYER_NO_NEW_PRIVS = 0, /* must stay first: prerequisite for the rest */
     AG_LAYER_LANDLOCK_FS,      /* filesystem enforcement (Phase 4) */
-    /* Phase 5+ append: AG_LAYER_SECCOMP, ... */
+    AG_LAYER_SECCOMP,          /* syscall deny-list; must stay last-applied (Phase 5) */
+    /* Phase 6+ append network/resource layers */
     AG_LAYER_COUNT
 };
 

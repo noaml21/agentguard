@@ -20,3 +20,12 @@ void ag_policy_add_default_reads(struct ag_policy *pol)
         pol->read_paths[pol->nread++] = kDefaultReads[i];
     }
 }
+
+void ag_policy_add_default_writes(struct ag_policy *pol)
+{
+    if (pol->no_default_reads)
+        return;
+    if (pol->nwrite >= AG_MAX_PATHS)
+        return;
+    pol->write_paths[pol->nwrite++] = "/tmp";
+}

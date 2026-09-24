@@ -2,6 +2,7 @@
 #include "sandbox.h"
 #include "landlock.h"
 #include "policy.h"
+#include "seccomp.h"
 #include "util.h"
 
 #include <errno.h>
@@ -37,6 +38,17 @@ static int apply_landlock_fs(const struct ag_policy *pol)
     return ll_restrict_fs(pol);
 }
 
+static int probe_seccomp(void)
+{
+    return sc_available();
+}
+
+static int apply_seccomp(const struct ag_policy *pol)
+{
+    (void)pol;
+    return sc_apply();
+}
+
 struct layer_def {
     const char *name;
     int (*probe)(void);
@@ -55,6 +67,12 @@ static const struct layer_def kLayers[AG_LAYER_COUNT] = {
         .name = "landlock_fs",
         .probe = probe_landlock_fs,
         .apply = apply_landlock_fs,
+        .required_by_default = 1,
+    },
+    [AG_LAYER_SECCOMP] = {
+        .name = "seccomp",
+        .probe = probe_seccomp,
+        .apply = apply_seccomp,
         .required_by_default = 1,
     },
 };

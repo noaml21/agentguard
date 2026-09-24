@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -93,6 +94,14 @@ static int add_path(int ruleset_fd, const char *path, uint64_t access, int requi
             return 1; /* optional default that isn't present here */
         ag_warnf("landlock: cannot open %s: %s", path, strerror(errno));
         return -1;
+    }
+    /* Directory-only rights (READ_DIR, REMOVE_*, MAKE_*, REFER) are rejected with
+     * EINVAL on a regular file, so mask the grant down to file-applicable rights
+     * for non-directories. */
+    struct stat st;
+    if (fstat(fd, &st) == 0 && !S_ISDIR(st.st_mode)) {
+        access &= (LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE |
+                   LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_TRUNCATE);
     }
     struct landlock_path_beneath_attr attr = {
         .allowed_access = access,

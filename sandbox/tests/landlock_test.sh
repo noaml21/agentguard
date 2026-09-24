@@ -33,8 +33,15 @@ mkdir -p "$WS" "$OUT"
 echo "workspace-input" > "$WS/infile"
 echo "TOP_SECRET" > "$OUT/secret"
 
-# run <marker-test...> : run a target with cwd=workspace and workspace policy.
-run() { ( cd "$WS" && "$RUN" --workspace "$WS" -- "$@" ); }
+# run <marker-test...> : run a target with cwd=workspace and an explicit minimal
+# policy. We pass --no-default-reads (which also disables the default /tmp
+# writable scratch) plus the specific system read locations, so that the "outside"
+# fixture -- which lives under /tmp -- is genuinely outside the writable set and
+# the outside-denial checks are meaningful.
+SYSREAD=(--allow-read /usr --allow-read /bin --allow-read /sbin
+         --allow-read /lib --allow-read /lib64 --allow-read /etc
+         --allow-read /proc --allow-read /sys --allow-read /dev)
+run() { ( cd "$WS" && "$RUN" --workspace "$WS" --no-default-reads "${SYSREAD[@]}" -- "$@" ); }
 
 # --- Permitted operations ---
 out="$(run sh -c 'cat infile')"
