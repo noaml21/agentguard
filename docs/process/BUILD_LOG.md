@@ -59,3 +59,33 @@ Result (`redteam/results/v1_results.json`): **bypass=11, prevented=7, allowed-sa
   and the firewall regex is defeated by interpreters, expansion, and equivalent tools.
 
 Corpus is mechanism-neutral so Phase 11 replays the identical semantic cases under V2.
+
+## 2026-09-24 — Session 1: note on live V1 hook friction during V2 dev
+
+The live PostToolUse syntax checker runs `gcc -fsyntax-only <file>` with no include
+path, so every multi-file V2 `.c` Write reports exit 2 ("util.h: No such file or
+directory"). This is **cosmetic only**: PostToolUse runs after the write, cannot undo it,
+and the file is written correctly (verified on disk). No hook is modified; V2 code is
+compiled via `make -C sandbox` which sets `-Iinclude`. Recorded per the self-hosting rule;
+not a blocker.
+
+## 2026-09-24 — Session 1: Phase 2 (C runner, lifecycle, FD, TTY)
+
+Built `sandbox/` C project (readable modules): `options` (CLI, `--` separator, no shell),
+`fdsan` (close_range + /proc fallback), `lifecycle` (fork/exec/signalfd supervisor,
+subreaper, pgrp signal forwarding, wall-clock deadline, TTY foreground handoff, tree
+teardown), `util`, `main` (root refusal, version/help). `Makefile` with
+`-Wall -Wextra -Werror -Wshadow -Wconversion ...` and an ASan/UBSan `check-asan` target.
+
+Verified:
+- `make check`: 18 integration tests pass (exit codes incl. 128+signo, argv verbatim/no
+  shell, exec/usage codes 127/125, FD sanitation closes inherited 3/4, `--keep-fd`,
+  timeout=124 fires promptly, grandchild terminated, unrelated process survives, no leak
+  over 10 runs).
+- `python3 tests/tty_test.py`: 5 pty tests pass (target sees TTY; is foreground group;
+  Ctrl-C reaches it; SIGWINCH on resize reaches it; exit status through pty).
+- `make check-asan`: all 23 pass under ASan+UBSan with leak detection.
+
+Privilege model implemented: refuses EUID 0 (exit 125); never setuid; no root override.
+Note: shell-target WINCH traps are deferred by the shell, so the WINCH test uses a Python
+target (kernel delivers WINCH to the foreground group regardless).

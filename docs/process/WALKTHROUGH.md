@@ -37,3 +37,38 @@ The kernel supporting Landlock does not mean the sandbox applied it. The runner 
 three separate things for each layer: available (kernel supports it), requested (policy
 needs it), applied (setup call succeeded). The target runs only if every required layer
 is applied.
+
+## FD sanitation (Phase 2)
+
+An open descriptor is authority. If the agent inherits an fd pointing at a file,
+socket, or pipe outside the sandbox, no filesystem or network rule can take that
+authority away — the object is already open. So in the forked child, before exec,
+`fdsan_apply` closes every descriptor except stdin/stdout/stderr, any explicitly
+`--keep-fd` descriptors, and the internal report pipe. It prefers `close_range()`
+(one syscall over the gaps between kept fds) and falls back to scanning
+`/proc/self/fd`. Kept descriptors have `FD_CLOEXEC` cleared so they survive exec;
+the report pipe keeps `FD_CLOEXEC` so it closes exactly at `execve` — its EOF is how
+the supervisor learns the target started successfully.
+
+## Process lifecycle and reaping (Phase 2)
+
+The supervisor forks one child, which puts itself in a new process group and execs
+the target. The supervisor:
+
+- sets `PR_SET_CHILD_SUBREAPER` so a descendant that outlives its parent reparents to
+  the supervisor instead of to init, and can therefore be reaped;
+- blocks the managed signals and reads them through a `signalfd`, so signal handling
+  and the wall-clock deadline are one `poll()` loop with no async-signal-unsafe work;
+- forwards SIGTERM/SIGINT/SIGHUP/SIGQUIT and SIGWINCH to the child's process **group**;
+- on the deadline, or after the main child exits, sends SIGTERM to the group, waits a
+  grace period, then SIGKILL, reaping every descendant.
+
+Per-mode limit (documented, not hidden): a descendant that calls `setsid()` leaves the
+group and no longer receives these group signals. Without a cgroup it is still reaped
+once it reparents to the subreaper, but it may not be *signalled*. Phase 7's cgroup
+`cgroup.kill` closes this gap where a delegated cgroup is available.
+
+## Why the supervisor stays unrestricted
+
+Only the child restricts itself. The supervisor must remain able to signal and reap the
+whole tree and restore the terminal, so it never installs Landlock/seccomp on itself.
