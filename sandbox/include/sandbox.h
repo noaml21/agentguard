@@ -21,9 +21,9 @@
 
 enum ag_layer {
     AG_LAYER_NO_NEW_PRIVS = 0, /* must stay first: prerequisite for the rest */
+    AG_LAYER_CGROUP_KILL,      /* join owned cgroup for tree kill (Phase 7); opportunistic */
     AG_LAYER_LANDLOCK_FS,      /* filesystem enforcement (Phase 4) */
     AG_LAYER_SECCOMP,          /* syscall deny-list; must stay last-applied (Phase 5) */
-    /* Phase 6+ append network/resource layers */
     AG_LAYER_COUNT
 };
 
@@ -53,6 +53,10 @@ struct ag_negotiation {
     uint32_t required_mask; /* subset of requested that must apply */
     uint32_t missing_mask;  /* required but unavailable (degraded reporting) */
     enum ag_net_mode net_mode; /* requested network mode; none is enforced by seccomp */
+    /* Resource settings, reported by status (applied in the child / lifecycle). */
+    long timeout_ms;           /* wall-clock deadline for the tree; 0 = none */
+    long long max_fsize;       /* RLIMIT_FSIZE bytes; 0 = unlimited */
+    long long max_nofile;      /* RLIMIT_NOFILE; 0 = inherited */
 };
 
 #define AG_LAYER_BIT(layer) (1u << (layer))

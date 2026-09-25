@@ -25,6 +25,9 @@ void options_usage(const char *prog)
         "  --no-default-reads  Do not allow the default system read locations.\n"
         "  --net none|all      none (default): deny all IP networking (TCP/UDP/raw);\n"
         "                      all: allow host networking (intentional egress).\n"
+        "  --max-file-size N   Per-process RLIMIT_FSIZE: no process may write a file\n"
+        "                      past N bytes (not a disk quota).\n"
+        "  --max-open-files N  Per-process RLIMIT_NOFILE (N >= 16).\n"
         "  --strict            Refuse to run unless every required layer applies\n"
         "                      (default).\n"
         "  --degraded          Run even if a required layer is unavailable, and\n"
@@ -61,6 +64,19 @@ static long parse_timeout_ms(const char *s)
     if (errno != 0 || *end != '\0' || sec < 0 || sec > 1e7)
         return -1;
     return (long)(sec * 1000.0);
+}
+
+/* Parse a decimal integer in [min, max]. Returns -1 on error. */
+static long long parse_count(const char *s, long long min, long long max)
+{
+    if (!s || *s < '0' || *s > '9')
+        return -1;
+    char *end = NULL;
+    errno = 0;
+    long long v = strtoll(s, &end, 10);
+    if (errno != 0 || *end != '\0' || v < min || v > max)
+        return -1;
+    return v;
 }
 
 int options_parse(int argc, char **argv, struct options *opts)
@@ -152,6 +168,24 @@ int options_parse(int argc, char **argv, struct options *opts)
                 ag_warnf("invalid --net value: %s (expected none|all)", argv[i]);
                 return -1;
             }
+            continue;
+        }
+        if (strcmp(arg, "--max-file-size") == 0 || strcmp(arg, "--max-open-files") == 0) {
+            int fsize = arg[6] == 'f';
+            if (++i >= argc) {
+                ag_warnf("%s requires an argument", arg);
+                return -1;
+            }
+            long long v = fsize ? parse_count(argv[i], 1, LLONG_MAX)
+                                : parse_count(argv[i], 16, 1 << 20);
+            if (v < 0) {
+                ag_warnf("invalid %s value: %s", arg, argv[i]);
+                return -1;
+            }
+            if (fsize)
+                opts->max_fsize = v;
+            else
+                opts->max_nofile = v;
             continue;
         }
         if (strcmp(arg, "--timeout") == 0) {

@@ -143,6 +143,29 @@ struct in user memory that seccomp cannot read, so we return `ENOSYS` for it; gl
 runtimes interpret that as an older kernel and fall back to `clone()`, where the flag filter
 applies. The tests confirm fork, pthreads, Python threads/subprocess and git still work.
 
+## Resource limits and the cgroup kill tier (Phase 7)
+
+rlimits look like sandbox limits but are not: each process gets its own copy at fork, so
+`--max-file-size 1M` means "no single process may grow a file past 1 MiB", not "the agent
+may write 1 MiB". We set soft and hard equal so the target cannot raise them again, keep
+core dumps off unconditionally (a crash dump of an agent can contain its API key), and
+offer file-size and open-file bounds only on request. `RLIMIT_NPROC` is left alone because
+it counts all of the user's processes on the machine, not the sandbox's.
+
+The deadline already existed in the Phase 2 supervisor; Phase 7 does not add a timer. What
+it adds is a better kill. A process group is a weak container: any descendant can call
+`setsid()` and walk out of it, and the Phase 2 teardown could not reach it. cgroup v2 has
+`cgroup.kill`, which kills every member of a cgroup atomically. So when the runner's own
+cgroup is writable (delegated to the user, as the terminal scope is here), it creates an
+owned child cgroup per run, the child joins it before doing anything else, and teardown
+writes `cgroup.kill`. Landlock keeps `/sys/fs/cgroup` unwritable, so the target cannot move
+itself back out. The test proves the difference both ways: the same setsid escapee
+survives with the layer disabled and dies with it enabled.
+
+We stop there. Real aggregate limits (`pids.max`, `memory.max`) need controllers switched
+on in the parent cgroup, which belongs to the terminal and holds unrelated processes. The
+runner reports aggregate limits as unavailable instead of pretending rlimits are enough.
+
 What `--net none` does *not* do: it does not stop the sandboxed tree from talking to
 same-UID services over Unix sockets. The Phase 6 probe showed the worst case — asking the
 user systemd manager over D-Bus to start a process, which then runs with no AgentGuard

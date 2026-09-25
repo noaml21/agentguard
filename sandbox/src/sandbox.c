@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "sandbox.h"
+#include "cgroup.h"
 #include "landlock.h"
 #include "policy.h"
 #include "seccomp.h"
@@ -28,6 +29,22 @@ static int apply_no_new_privs(const struct ag_policy *pol)
     return prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1 ? 0 : (errno = EPERM, -1);
 }
 
+static int probe_cgroup_kill(void)
+{
+    return cg_available();
+}
+
+static int apply_cgroup_kill(const struct ag_policy *pol)
+{
+    /* The join itself happens first thing in the child (before FD sanitation
+     * closes the cgroup.procs fd); this layer reports its outcome. */
+    if (pol->cgroup_join_err != 0) {
+        errno = pol->cgroup_join_err;
+        return -1;
+    }
+    return 0;
+}
+
 static int probe_landlock_fs(void)
 {
     return ll_abi() >= 1;
@@ -53,6 +70,10 @@ struct layer_def {
     int (*probe)(void);
     int (*apply)(const struct ag_policy *pol);
     int required_by_default;
+    /* Opportunistic: requested whenever available but never required; a failure
+     * to apply is reported as not applied instead of refusing the run. Only for
+     * layers that add robustness beyond the Core guarantees. */
+    int opportunistic;
 };
 
 static const struct layer_def kLayers[AG_LAYER_COUNT] = {
@@ -61,6 +82,13 @@ static const struct layer_def kLayers[AG_LAYER_COUNT] = {
         .probe = probe_no_new_privs,
         .apply = apply_no_new_privs,
         .required_by_default = 1,
+    },
+    [AG_LAYER_CGROUP_KILL] = {
+        .name = "cgroup_kill",
+        .probe = probe_cgroup_kill,
+        .apply = apply_cgroup_kill,
+        .required_by_default = 0,
+        .opportunistic = 1,
     },
     [AG_LAYER_LANDLOCK_FS] = {
         .name = "landlock_fs",
@@ -125,6 +153,8 @@ int ag_negotiate(enum ag_mode mode, enum ag_net_mode net_mode, struct ag_negotia
         if (kLayers[i].required_by_default) {
             neg->requested_mask |= bit;
             neg->required_mask |= bit;
+        } else if (kLayers[i].opportunistic && available) {
+            neg->requested_mask |= bit;
         }
     }
 
@@ -159,6 +189,8 @@ int ag_apply_layers(const struct ag_negotiation *neg, const struct ag_policy *po
         } else {
             rc = kLayers[i].apply ? kLayers[i].apply(pol) : (errno = ENOSYS, -1);
         }
+        if (rc != 0 && kLayers[i].opportunistic && !(neg->required_mask & bit))
+            continue; /* not applied; status reports it, the run is not refused */
         if (rc != 0) {
             rep.tag = AG_REPORT_SETUP_FAIL;
             rep.layer = i;
@@ -185,6 +217,8 @@ static const char *layer_state(const struct ag_negotiation *neg, uint32_t applie
     uint32_t bit = AG_LAYER_BIT(i);
     if (applied & bit)
         return "applied";
+    if (applied && (neg->requested_mask & bit))
+        return "not-applied"; /* post-run: requested opportunistic layer failed */
     if (neg->missing_mask & bit)
         return "missing";
     if (!(neg->available_mask & bit))
@@ -222,8 +256,14 @@ void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
                     (neg->required_mask & bit) ? "true" : "false",
                     (applied & bit) ? "true" : "false");
         }
-        fprintf(out, "],\"network\":{\"mode\":\"%s\",\"enforced\":%s}}\n", net_name,
+        fprintf(out, "],\"network\":{\"mode\":\"%s\",\"enforced\":%s}", net_name,
                 net_ok ? "true" : "false");
+        /* Resource limits: rlimits are per-process (not aggregate); the only
+         * aggregate mechanism is the cgroup_kill layer above (kill, no limits). */
+        fprintf(out, ",\"resources\":{\"timeout_ms\":%ld,\"rlimit_core\":0,"
+                     "\"rlimit_fsize\":%lld,\"rlimit_nofile\":%lld,"
+                     "\"aggregate_limits\":\"unavailable\"}}\n",
+                neg->timeout_ms, neg->max_fsize, neg->max_nofile);
         return;
     }
     fprintf(out, "AgentGuard sandbox status (mode=%s)\n",
@@ -244,6 +284,11 @@ void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
     else
         fprintf(out, "  %-16s %s\n", "network",
                 "none REQUESTED but NOT ENFORCED (seccomp missing): IP networking allowed");
+    fprintf(out, "  %-16s timeout=%ldms core=0 fsize=%lld nofile=%lld "
+                 "(per-process rlimits; 0 = unset)\n",
+            "resources", neg->timeout_ms, neg->max_fsize, neg->max_nofile);
+    fprintf(out, "  %-16s %s\n", "aggregate",
+            "pids/memory limits unavailable (no owned cgroup controllers)");
     if (neg->missing_mask) {
         fprintf(out, "  WARNING: missing required layers -> guarantees reduced\n");
     }

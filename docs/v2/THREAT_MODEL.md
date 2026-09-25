@@ -44,6 +44,10 @@ Every row below is subject to the **host-IPC residual** in §4.1.
 | ptrace / process_vm_* / namespace creation+join / mount (incl. new mount API) / module / kexec / bpf / perf / io_uring denied | VERIFIED (seccomp, Phases 5–6) | only if seccomp applied | — |
 | `--net none`: no IP (v4/v6 TCP, UDP, raw) or other non-local socket can be created | VERIFIED (socket-family allowlist; effect tests with loopback listeners) | NOT enforced if seccomp missing — reported in status + warning | UNAVAILABLE on dev host |
 | `--net all`: host networking; no destination filtering | by design | same | — |
+| Core dumps disabled; optional per-process file-size / open-file bounds | VERIFIED (rlimits, Phase 7; per process, not aggregate) | same | — |
+| Wall-clock deadline kills the tree | VERIFIED (Phase 2 + Phase 7 escapee case) | same | — |
+| setsid/setpgid escapers killed at teardown | VERIFIED on dev host when `cgroup_kill` applied (host-only; opportunistic) | pgid-only teardown when unavailable — escapers survive (VERIFIED) | — |
+| Aggregate process-count / memory limits | UNAVAILABLE in Core (needs controllers in a cgroup AgentGuard does not own) | — | — |
 | Same-UID signals to outside processes | planned (Landlock scope, Phase 9); not applied | — | — |
 | Same-UID ptrace | VERIFIED seccomp deny; Yama scope 1 ASSUMED as backstop | — | — |
 
@@ -64,6 +68,13 @@ Every row below is subject to the **host-IPC residual** in §4.1.
   unprivileged process on the dev host (no caps; `dmesg_restrict=1`), so their seccomp
   rules are belt-and-suspenders and the tests do not independently prove them there.
 - **No destination filtering** in any mode; `--net all` is full host networking.
+- **Resources are not an availability guarantee.** rlimits bound each process
+  individually; a fork-heavy or many-file workload can still exhaust host memory, PIDs, or
+  disk. The cgroup tier kills, it does not limit. Processes started through the host-IPC
+  escape above are outside the owned cgroup.
+- **`prlimit64` on other same-UID processes** is not filtered (it is also how the target
+  sets its own limits); a sandboxed process can lower an outside process's rlimits. Phase 9
+  inventory item.
 
 ## 5. Non-goals
 

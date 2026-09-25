@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "lifecycle.h"
+#include "cgroup.h"
 #include "fdsan.h"
 #include "util.h"
 
@@ -11,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/signalfd.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -67,9 +69,10 @@ static void reap_tree(long deadline_ms)
 }
 
 /* SIGTERM then, after a grace period, SIGKILL the whole process group, reaping
- * throughout. pgid equals the child pid. */
+ * throughout. pgid equals the child pid. If the tree is in an owned cgroup,
+ * cgroup.kill also takes out descendants that left the group via setsid(). */
 static void terminate_group(pid_t pgid, pid_t main_pid, int *main_done,
-                            int *main_status)
+                            int *main_status, const struct ag_cgroup *cg)
 {
     kill(-pgid, SIGTERM);
     long deadline = now_ms() + AG_TEARDOWN_GRACE_MS;
@@ -80,17 +83,46 @@ static void terminate_group(pid_t pgid, pid_t main_pid, int *main_done,
         struct timespec nap = {0, 20 * 1000 * 1000};
         nanosleep(&nap, NULL);
     }
+    cg_kill(cg);
     kill(-pgid, SIGKILL);
     reap_tree(now_ms() + AG_TEARDOWN_GRACE_MS);
 }
 
 /* Child side: new process group, default signal disposition, FD sanitation,
  * enforcement layers, then exec. Never returns on success. */
-static void child_exec(const struct options *opts, const struct ag_negotiation *neg,
-                       int report_fd) __attribute__((noreturn));
-static void child_exec(const struct options *opts, const struct ag_negotiation *neg,
-                       int report_fd)
+/* Per-process resource limits (Phase 7.1). Soft and hard are set equal so the
+ * target cannot raise them back (raising a hard limit needs CAP_SYS_RESOURCE).
+ * Inherited across fork/exec, but each process gets its own copy: these bound
+ * every process individually, never the tree in aggregate. */
+static int apply_rlimits(const struct options *opts)
 {
+    /* Core dumps off: a dump of an agent process can hold secrets, and a piped
+     * core_pattern hands it to a helper running outside the sandbox. */
+    struct rlimit rl = {0, 0};
+    if (setrlimit(RLIMIT_CORE, &rl) != 0)
+        return -1;
+    if (opts->max_fsize > 0) {
+        rl.rlim_cur = rl.rlim_max = (rlim_t)opts->max_fsize;
+        if (setrlimit(RLIMIT_FSIZE, &rl) != 0)
+            return -1;
+    }
+    if (opts->max_nofile > 0) {
+        rl.rlim_cur = rl.rlim_max = (rlim_t)opts->max_nofile;
+        if (setrlimit(RLIMIT_NOFILE, &rl) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static void child_exec(const struct options *opts, const struct ag_negotiation *neg,
+                       int report_fd, int cgroup_procs_fd) __attribute__((noreturn));
+static void child_exec(const struct options *opts, const struct ag_negotiation *neg,
+                       int report_fd, int cgroup_procs_fd)
+{
+    /* Join the owned cgroup before anything else, so every later descendant is
+     * created inside it. The outcome is reported by the cgroup_kill layer. */
+    int cgroup_join_err = cg_join(cgroup_procs_fd) == 0 ? 0 : errno;
+
     /* Restore default handlers and unblock everything so the target sees normal
      * signal behavior. */
     sigset_t empty;
@@ -118,6 +150,13 @@ static void child_exec(const struct options *opts, const struct ag_negotiation *
         _exit(AG_EXIT_SETUP_FAILURE);
     }
 
+    if (apply_rlimits(opts) != 0) {
+        struct ag_report rep = {.tag = AG_REPORT_SETUP_FAIL, .layer = -1,
+                                .err = errno, .applied_mask = 0};
+        (void)ag_write_all(report_fd, &rep, sizeof rep);
+        _exit(AG_EXIT_SETUP_FAILURE);
+    }
+
     /* Build the filesystem/network policy from options (Phase 8 will also load a
      * policy file into this same struct). */
     struct ag_policy fspol;
@@ -125,6 +164,7 @@ static void child_exec(const struct options *opts, const struct ag_negotiation *
     fspol.workspace = opts->workspace ? opts->workspace : ".";
     fspol.no_default_reads = opts->no_default_reads;
     fspol.net_mode = opts->net_mode;
+    fspol.cgroup_join_err = cgroup_join_err;
     for (size_t i = 0; i < opts->nread && fspol.nread < AG_MAX_PATHS; i++)
         fspol.read_paths[fspol.nread++] = opts->read_paths[i];
     for (size_t i = 0; i < opts->nwrite && fspol.nwrite < AG_MAX_PATHS; i++)
@@ -156,6 +196,14 @@ int lifecycle_run(const struct options *opts, const struct ag_negotiation *neg)
         return AG_EXIT_SETUP_FAILURE;
     }
 
+    /* Owned cgroup for tree kill, when the negotiated layer set includes it. A
+     * creation failure leaves procs_fd at -1, so the child's join fails and the
+     * layer is reported not applied; teardown then relies on the process group. */
+    struct ag_cgroup cg = {.parent_fd = -1, .procs_fd = -1, .kill_fd = -1, .name = ""};
+    if ((neg->requested_mask & AG_LAYER_BIT(AG_LAYER_CGROUP_KILL)) && cg_create(&cg) != 0 &&
+        opts->verbose)
+        ag_warn_errno("cgroup_kill: creating owned cgroup");
+
     int tty_fd = isatty(STDIN_FILENO) ? STDIN_FILENO : -1;
     pid_t saved_fg = -1;
     if (tty_fd >= 0)
@@ -175,11 +223,12 @@ int lifecycle_run(const struct options *opts, const struct ag_negotiation *neg)
         sigprocmask(SIG_SETMASK, &old, NULL);
         close(report[0]);
         close(report[1]);
+        cg_destroy(&cg);
         return AG_EXIT_SETUP_FAILURE;
     }
     if (child == 0) {
         close(report[0]);
-        child_exec(opts, neg, report[1]);
+        child_exec(opts, neg, report[1], cg.procs_fd);
         _exit(AG_EXIT_EXEC_FAILURE); /* unreachable */
     }
 
@@ -215,7 +264,7 @@ int lifecycle_run(const struct options *opts, const struct ag_negotiation *neg)
 
         if (pr == 0) { /* deadline reached */
             timed_out = 1;
-            terminate_group(child, child, &main_done, &main_status);
+            terminate_group(child, child, &main_done, &main_status, &cg);
             break;
         }
         if (pr < 0) {
@@ -268,7 +317,8 @@ int lifecycle_run(const struct options *opts, const struct ag_negotiation *neg)
     close(report[0]);
 
     /* Tear down anything still alive in the group (reparented descendants). */
-    terminate_group(child, child, &main_done, &main_status);
+    terminate_group(child, child, &main_done, &main_status, &cg);
+    cg_destroy(&cg);
 
     if (tty_fd >= 0 && saved_fg > 0) {
         (void)tcsetpgrp(tty_fd, saved_fg);

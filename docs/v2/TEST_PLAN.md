@@ -48,6 +48,19 @@ just exit codes.
   init/add/commit still work. Discrimination baseline (same helper, unsandboxed, dev host):
   clone(NEWUSER) and clone3 **succeed**, pidfd_getfd → EBADF, io_uring_setup → EFAULT; fsopen
   and clone(NEWNET) are EPERM even unsandboxed (not independently proven there).
+- **Phase 7** (`sandbox/tests/resource_test.sh`, 14 cases on the dev host): core soft+hard
+  0 in a descendant and cannot be raised; `--max-file-size` makes a python write fail
+  EFBIG and a shell writer stop, file capped exactly at the bound; large writes work
+  without the flag; `--max-open-files` gives EMFILE below the bound and a gcc workflow still
+  works at 64; bad values rejected; status JSON reports resources. **Host-only**
+  (skip with reason when `cgroup_kill` is unavailable, never counted as verified): target
+  and descendant are in `agentguard-run.<pid>`; target cannot write itself back to the
+  parent cgroup; a setsid escapee **survives** with the layer disabled
+  (`AGENTGUARD_TEST_UNAVAIL=cgroup_kill`) and **dies** with it enabled (discrimination);
+  timeout exits 124 and kills the escapee; an unrelated process survives; the parent
+  cgroup's child list and `subtree_control` are identical before/after. The escapee
+  fixture waits until the escapee is in its own session: without that wait the ordinary
+  group teardown kills it and the case proves nothing (bug found while writing the test).
 - **Phase 8**: malformed policies rejected with useful errors; policy file inside the
   writable workspace refused; sandboxed process cannot modify the policy/binary.
 - **Phase 9**: signal to an outside same-UID process denied (scope); ptrace denied;

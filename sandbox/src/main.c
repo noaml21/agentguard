@@ -37,6 +37,9 @@ int main(int argc, char **argv)
     enum ag_mode mode = opts.degraded ? AG_MODE_DEGRADED : AG_MODE_STRICT;
     struct ag_negotiation neg;
     int neg_rc = ag_negotiate(mode, opts.net_mode, &neg);
+    neg.timeout_ms = opts.timeout_ms;
+    neg.max_fsize = opts.max_fsize;
+    neg.max_nofile = opts.max_nofile;
 
     if (opts.print_status) {
         ag_print_status(1, &neg, 0, opts.json);

@@ -203,3 +203,32 @@ intermediate mode on this kernel.
 
 Verified: `make -C sandbox check` = 18+12+14+17+21+5 = **87** green; `make -C sandbox
 check-asan` = **87** green, no sanitizer reports.
+
+## 2026-09-25 — Session 2: Phase 7 (resource limits)
+
+Measured first: the runner's cgroup is the terminal's `vte-spawn-….scope` (user-owned,
+controllers `memory pids` available, `subtree_control` empty, 11 unrelated processes). So a
+kill tier is safely available (owned child cgroup, no controllers needed) but aggregate
+pids/memory limits are not (would require writing a parent cgroup we do not own; blocked by
+the no-internal-process rule anyway). Implemented accordingly:
+
+- 7.1 rlimits (`lifecycle.c` `apply_rlimits`, soft = hard): `RLIMIT_CORE`=0 always;
+  `--max-file-size` (`RLIMIT_FSIZE`), `--max-open-files` (`RLIMIT_NOFILE`, ≥16) on request.
+  `RLIMIT_NPROC` deliberately not used (per-UID system-wide).
+- 7.2 no new timer: `--timeout` stays the Phase 2 supervisor deadline; its teardown now
+  also writes `cgroup.kill`.
+- 7.3 `cgroup.{h,c}` + layer `cgroup_kill` (index 1). New *opportunistic* layer kind in the
+  negotiation: requested when available, never required, an apply failure is reported
+  `not-applied` rather than refusing. The child joins as its first action.
+- status: `resources` block (timeout, rlimits, `aggregate_limits: "unavailable"`).
+
+Bugs found and fixed while building it: (1) `ag_write_all` returns 0 on success, not a byte
+count — join/kill checks were inverted; (2) FD sanitation closed the inherited
+`cgroup.procs` fd before the layer ran (strace: `write(6,"0") = EBADF`) → join moved to the
+first line of `child_exec`, the layer reports the recorded outcome; (3) test race: the
+escapee fixture exited before `setsid` completed, so group teardown killed it in both arms
+and the discrimination case failed — fixture now waits for the new session.
+
+Verified: `tests/resource_test.sh` 14/14 (6 host-only cgroup cases ran on the dev host,
+not skipped); `make -C sandbox check` = 18+12+14+17+21+14+5 = **101**; `check-asan` =
+**101**, no sanitizer reports.

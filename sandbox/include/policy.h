@@ -21,6 +21,7 @@ enum ag_net_mode {
 
 struct ag_policy {
     enum ag_net_mode net_mode;
+    int cgroup_join_err;                /* 0 if the child joined the owned cgroup, else errno */
     const char *workspace;              /* writable root (rw+create+remove) */
     const char *read_paths[AG_MAX_PATHS];
     size_t nread;
