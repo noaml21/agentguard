@@ -28,6 +28,9 @@ void options_usage(const char *prog)
         "  --max-file-size N   Per-process RLIMIT_FSIZE: no process may write a file\n"
         "                      past N bytes (not a disk quota).\n"
         "  --max-open-files N  Per-process RLIMIT_NOFILE (N >= 16).\n"
+        "  --policy FILE       Read workspace/read/write/default-reads/net/timeout/\n"
+        "                      limits from FILE (absolute, canonical, outside every\n"
+        "                      writable root). Cannot be combined with those flags.\n"
         "  --strict            Refuse to run unless every required layer applies\n"
         "                      (default).\n"
         "  --degraded          Run even if a required layer is unavailable, and\n"
@@ -54,20 +57,20 @@ static int parse_fd(const char *s)
 }
 
 /* Parse seconds (accepts decimals) into milliseconds. Returns -1 on error. */
-static long parse_timeout_ms(const char *s)
+long options_parse_timeout_ms(const char *s)
 {
     if (!s || !*s)
         return -1;
     char *end = NULL;
     errno = 0;
     double sec = strtod(s, &end);
-    if (errno != 0 || *end != '\0' || sec < 0 || sec > 1e7)
+    if (errno != 0 || *end != '\0' || !(sec >= 0 && sec <= 1e7)) /* also rejects nan */
         return -1;
     return (long)(sec * 1000.0);
 }
 
 /* Parse a decimal integer in [min, max]. Returns -1 on error. */
-static long long parse_count(const char *s, long long min, long long max)
+long long options_parse_count(const char *s, long long min, long long max)
 {
     if (!s || *s < '0' || *s > '9')
         return -1;
@@ -120,6 +123,8 @@ int options_parse(int argc, char **argv, struct options *opts)
             continue;
         }
         if (strcmp(arg, "--workspace") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--workspace";
             if (++i >= argc) {
                 ag_warnf("--workspace requires an argument");
                 return -1;
@@ -128,6 +133,8 @@ int options_parse(int argc, char **argv, struct options *opts)
             continue;
         }
         if (strcmp(arg, "--allow-read") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--allow-read";
             if (++i >= argc) {
                 ag_warnf("--allow-read requires an argument");
                 return -1;
@@ -140,6 +147,8 @@ int options_parse(int argc, char **argv, struct options *opts)
             continue;
         }
         if (strcmp(arg, "--allow-write") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--allow-write";
             if (++i >= argc) {
                 ag_warnf("--allow-write requires an argument");
                 return -1;
@@ -152,10 +161,14 @@ int options_parse(int argc, char **argv, struct options *opts)
             continue;
         }
         if (strcmp(arg, "--no-default-reads") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--no-default-reads";
             opts->no_default_reads = 1;
             continue;
         }
         if (strcmp(arg, "--net") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--net";
             if (++i >= argc) {
                 ag_warnf("--net requires an argument (none|all)");
                 return -1;
@@ -171,13 +184,15 @@ int options_parse(int argc, char **argv, struct options *opts)
             continue;
         }
         if (strcmp(arg, "--max-file-size") == 0 || strcmp(arg, "--max-open-files") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = arg;
             int fsize = arg[6] == 'f';
             if (++i >= argc) {
                 ag_warnf("%s requires an argument", arg);
                 return -1;
             }
-            long long v = fsize ? parse_count(argv[i], 1, LLONG_MAX)
-                                : parse_count(argv[i], 16, 1 << 20);
+            long long v = fsize ? options_parse_count(argv[i], 1, LLONG_MAX)
+                                : options_parse_count(argv[i], 16, 1 << 20);
             if (v < 0) {
                 ag_warnf("invalid %s value: %s", arg, argv[i]);
                 return -1;
@@ -189,11 +204,13 @@ int options_parse(int argc, char **argv, struct options *opts)
             continue;
         }
         if (strcmp(arg, "--timeout") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--timeout";
             if (++i >= argc) {
                 ag_warnf("--timeout requires an argument");
                 return -1;
             }
-            opts->timeout_ms = parse_timeout_ms(argv[i]);
+            opts->timeout_ms = options_parse_timeout_ms(argv[i]);
             if (opts->timeout_ms < 0) {
                 ag_warnf("invalid --timeout value: %s", argv[i]);
                 return -1;
@@ -219,6 +236,18 @@ int options_parse(int argc, char **argv, struct options *opts)
                 return -1;
             }
             opts->keep_fds[opts->nkeep++] = fd;
+            continue;
+        }
+        if (strcmp(arg, "--policy") == 0) {
+            if (++i >= argc) {
+                ag_warnf("--policy requires an argument");
+                return -1;
+            }
+            if (opts->policy_path) {
+                ag_warnf("--policy given more than once");
+                return -1;
+            }
+            opts->policy_path = argv[i];
             continue;
         }
         if (arg[0] == '-' && arg[1] != '\0') {

@@ -200,6 +200,46 @@ rejects it anyway. Users who need aggregate limits can start the runner inside a
 scope that sets them (`systemd-run --user --scope -p TasksMax=… -p MemoryMax=…
 agentguard-run …`); systemd enforces that, not AgentGuard.
 
+## Policy file and control-plane integrity (Phase 8, implemented)
+
+`--policy FILE` supplies the settings the CLI otherwise gives; grammar and bounds are
+specified in `sandbox/include/policyfile.h` (parser: `src/policyfile.c`).
+
+- **Format**: ASCII lines, exactly `key = value`, `version = 1` first, `#` comments and
+  blank lines. Keys: `workspace` (required), `read`, `write` (repeatable),
+  `default-reads = yes|no`, `net = none|all`, `timeout`, `max-file-size`,
+  `max-open-files`. Values are verbatim to end of line (paths may contain spaces); no
+  quoting, escapes, env expansion, globbing, includes. Paths must be absolute and
+  normalized (no empty/`.`/`..` components, no trailing `/`; `/` never writable). Unknown
+  or duplicate keys, empty values, tabs/CR/NUL/control/non-ASCII bytes, >64 KiB, >1024
+  lines, >64 paths per list, over-long lines, out-of-range numbers, duplicate paths, a path
+  both read and written, or a write path equal to the workspace are errors. Errors print a
+  line number and a fixed message, never the value.
+- **One representation**: the parser fills the same `struct options` as the CLI, using the
+  same numeric parsers (`options_parse_timeout_ms`, `options_parse_count`);
+  `ag_policy_from_options` is the single place that turns options into the enforced
+  `ag_policy` (used by the child and by the integrity checks).
+- **Precedence**: none. A setting the policy covers may not also be given on the CLI
+  (`--workspace`, `--allow-read`, `--allow-write`, `--no-default-reads`, `--net`,
+  `--timeout`, `--max-file-size`, `--max-open-files` → exit 125). Only non-policy flags
+  (`--status`, `--json`, `--verbose`, `--keep-fd`, `--strict`, `--degraded`) combine.
+- **Opened safely, before fork**: the `--policy` path must equal its `realpath` (absolute,
+  no symlinks anywhere). The parent opens the directory `O_PATH|O_NOFOLLOW`, then the file
+  `openat(…, O_NOFOLLOW)`, requires a regular file owned by the user or root and not
+  group/world-writable, and parses the bytes read from that fd. The child never opens it.
+- **Location check by inode**: using the *effective* writable roots of this run (workspace,
+  `write` paths, `/tmp` when default reads are on), the parent compares device+inode of the
+  policy file and of every ancestor directory (walked with `openat("..")` from the open
+  dirfd) against each root. Any match refuses the run: the target could overwrite, rename,
+  or replace the policy for the next run.
+- **Runner binary**: the same check runs on `/proc/self/exe`. In policy mode a runner
+  inside a writable root refuses the run; in CLI mode it is only reported
+  (`"control":{"runner_in_writable_root":…}`), because the common dev layout (workspace =
+  repository containing the build) would otherwise stop working.
+
+Landlock is what actually prevents modification; the checks make sure the protected
+objects are outside everything Landlock grants.
+
 ## seccomp argument filters (Phase 6 additions)
 
 The Phase 5 deny-list stays flat; Phase 6 added three small hand-computed blocks after it:

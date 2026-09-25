@@ -27,6 +27,8 @@ struct options {
     enum ag_net_mode net_mode;           /* AG_NET_NONE (default) or AG_NET_ALL */
     long long max_fsize;                 /* RLIMIT_FSIZE bytes per file; 0 = unlimited */
     long long max_nofile;                /* RLIMIT_NOFILE per process; 0 = inherited */
+    const char *policy_path;             /* --policy FILE (Phase 8), or NULL */
+    const char *policy_conflict;         /* first CLI option the policy file also covers */
     int degraded;        /* AG_MODE_DEGRADED when set, else strict */
     int verbose;         /* print negotiation + applied layers to stderr */
     int print_status;    /* print the layer table and exit without running */
@@ -41,5 +43,10 @@ struct options {
 int options_parse(int argc, char **argv, struct options *opts);
 
 void options_usage(const char *prog);
+
+/* Shared value parsers (CLI and policy file use the same validation).
+ * Seconds (decimals ok) -> ms, or -1. Decimal integer in [min, max], or -1. */
+long options_parse_timeout_ms(const char *s);
+long long options_parse_count(const char *s, long long min, long long max);
 
 #endif

@@ -166,6 +166,27 @@ We stop there. Real aggregate limits (`pids.max`, `memory.max`) need controllers
 on in the parent cgroup, which belongs to the terminal and holds unrelated processes. The
 runner reports aggregate limits as unavailable instead of pretending rlimits are enough.
 
+## Policy files and why their location matters (Phase 8)
+
+A policy file is control-plane data: whatever it says, the *next* run will enforce. If the
+sandboxed agent could edit it, one run could widen the next run's cage. So the parser is
+deliberately boring — `key = value` lines, one version, no quoting or expansion, every
+oddity an error — and the interesting part is where the file lives.
+
+String checks such as "does the path start with the workspace?" are easy to fool with
+symlinks, `..`, or a second path to the same directory. Instead the runner insists on the
+canonical path, opens the file without following links, and walks up from the directory it
+actually opened, comparing device and inode numbers with each root the target will be
+allowed to write. If the file or any directory above it is one of those roots, the run is
+refused. The effective roots matter: the same file in `/tmp` is refused by default (the
+target may write `/tmp`) and accepted once the policy turns default writes off. The runner
+binary gets the same check, refused in policy mode, reported otherwise.
+
+The tests then attack a protected policy and a copy of the runner from inside the sandbox
+in every spelling we could think of and compare hashes, inode numbers and the directory
+listing before and after — not just exit codes. Landlock does the actual blocking; the
+location check guarantees the protected files are outside what Landlock grants.
+
 What `--net none` does *not* do: it does not stop the sandboxed tree from talking to
 same-UID services over Unix sockets. The Phase 6 probe showed the worst case — asking the
 user systemd manager over D-Bus to start a process, which then runs with no AgentGuard

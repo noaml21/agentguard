@@ -232,3 +232,28 @@ and the discrimination case failed — fixture now waits for the new session.
 Verified: `tests/resource_test.sh` 14/14 (6 host-only cgroup cases ran on the dev host,
 not skipped); `make -C sandbox check` = 18+12+14+17+21+14+5 = **101**; `check-asan` =
 **101**, no sanitizer reports.
+
+## 2026-09-25 — Session 2 (continued): Phase 8 (policy format + integrity)
+
+CI for Phases 6 and 7 green (runs 36180346531, 36181400237). Added `policyfile.{h,c}`
+(strict line-based `key = value` parser, fd-based open, inode location walk),
+`--policy`, `ag_policy_from_options` in `policy.c` (the one options→policy builder, now
+used by `lifecycle.c` too), public shared value parsers in `options.c`, a runner-binary
+location check in `main.c`, and a `control` block in status/JSON. No CLI merge: covered
+flags alongside `--policy` exit 125. Design and grammar: ARCHITECTURE "Policy file".
+
+Defect fixed in a completed phase, with a regression test: `--timeout nan` passed the
+`sec < 0 || sec > 1e7` range check (NaN compares false) and reached an undefined
+double→long conversion; the check is now `!(sec >= 0 && sec <= 1e7)`, test in
+policy_test.sh.
+
+Test-writing bugs caught before trusting results: a single 8 KiB write under a 4 KiB
+`RLIMIT_FSIZE` is a short write, not EFBIG (now chunked); `printf … | bad` ran the checker
+in a pipeline subshell so its counts were lost (29 counted of 66 run) — `shopt -s lastpipe`.
+
+Dev-environment notes: the V1 file-policy hook also blocks Write to the session scratchpad
+(outside the workspace); throwaway scripts went to the git-ignored `sandbox/build/`.
+
+Verified: `tests/policy_test.sh` 66/66; `make -C sandbox check` =
+18+12+14+17+21+14+66+5 = **167**; `check-asan` = **167**, no sanitizer reports. Phase 8
+guarantees remain subject to the verified host-IPC escape (THREAT_MODEL §4.1).

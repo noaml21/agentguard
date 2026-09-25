@@ -57,6 +57,8 @@ struct ag_negotiation {
     long timeout_ms;           /* wall-clock deadline for the tree; 0 = none */
     long long max_fsize;       /* RLIMIT_FSIZE bytes; 0 = unlimited */
     long long max_nofile;      /* RLIMIT_NOFILE; 0 = inherited */
+    int policy_used;           /* settings came from a validated --policy file */
+    int runner_writable;       /* runner binary inside a writable root: 1, 0, -1 unknown */
 };
 
 #define AG_LAYER_BIT(layer) (1u << (layer))

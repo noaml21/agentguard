@@ -41,6 +41,7 @@ check-asan:
 	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/seccomp_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/network_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/resource_test.sh
+	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/policy_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 python3 tests/tty_test.py
 	$(MAKE) clean
 
@@ -51,6 +52,7 @@ check: all
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/seccomp_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/network_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/resource_test.sh
+	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/policy_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) python3 tests/tty_test.py
 
 clean:

@@ -48,6 +48,9 @@ Every row below is subject to the **host-IPC residual** in §4.1.
 | Wall-clock deadline kills the tree | VERIFIED (Phase 2 + Phase 7 escapee case) | same | — |
 | setsid/setpgid escapers killed at teardown | VERIFIED on dev host when `cgroup_kill` applied (host-only; opportunistic) | pgid-only teardown when unavailable — escapers survive (VERIFIED) | — |
 | Aggregate process-count / memory limits | UNAVAILABLE in Core (needs controllers in a cgroup AgentGuard does not own) | — | — |
+| Malformed policy never runs the target | VERIFIED (Phase 8, 37 malformed-input cases) | same | — |
+| Target cannot alter the policy used by the next run | VERIFIED in policy mode (location check + Landlock; 17 attack spellings leave bytes/inode/listing unchanged) | same | — |
+| Target cannot replace the runner binary for the next run | VERIFIED in policy mode (refused if inside a writable root); CLI mode: DEGRADED — only reported in status | same | — |
 | Same-UID signals to outside processes | planned (Landlock scope, Phase 9); not applied | — | — |
 | Same-UID ptrace | VERIFIED seccomp deny; Yama scope 1 ASSUMED as backstop | — | — |
 
@@ -60,7 +63,9 @@ Every row below is subject to the **host-IPC residual** in §4.1.
   process had `Seccomp: 0`, `NoNewPrivs: 0`, and could create `AF_INET` sockets — it is
   outside every V2 layer. Same-host daemons can also relay traffic (e.g. DNS via
   systemd-resolved). Until Phase 9 closes or explicitly scopes this, V2 guarantees hold only
-  against an adversary that does not use host IPC services.
+  against an adversary that does not use host IPC services. This includes the Phase 8
+  integrity rows: an unconfined process started this way can rewrite the policy file and
+  the runner binary.
 - **clone3**: flags are unfilterable (struct in user memory); mitigated by returning
   `ENOSYS` so callers fall back to the flag-filtered `clone()`. A program that *requires*
   clone3 (no fallback) fails; none observed (glibc, python, git, gcc tested).

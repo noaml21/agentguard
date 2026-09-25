@@ -262,8 +262,11 @@ void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
          * aggregate mechanism is the cgroup_kill layer above (kill, no limits). */
         fprintf(out, ",\"resources\":{\"timeout_ms\":%ld,\"rlimit_core\":0,"
                      "\"rlimit_fsize\":%lld,\"rlimit_nofile\":%lld,"
-                     "\"aggregate_limits\":\"unavailable\"}}\n",
-                neg->timeout_ms, neg->max_fsize, neg->max_nofile);
+                     "\"aggregate_limits\":\"unavailable\"},"
+                     "\"control\":{\"policy_file\":%s,\"runner_in_writable_root\":%s}}\n",
+                neg->timeout_ms, neg->max_fsize, neg->max_nofile,
+                neg->policy_used ? "true" : "false",
+                neg->runner_writable == 0 ? "false" : neg->runner_writable > 0 ? "true" : "null");
         return;
     }
     fprintf(out, "AgentGuard sandbox status (mode=%s)\n",
@@ -289,6 +292,9 @@ void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
             "resources", neg->timeout_ms, neg->max_fsize, neg->max_nofile);
     fprintf(out, "  %-16s %s\n", "aggregate",
             "pids/memory limits unavailable (no owned cgroup controllers)");
+    fprintf(out, "  %-16s policy-file=%s runner-in-writable-root=%s\n", "control",
+            neg->policy_used ? "yes" : "no",
+            neg->runner_writable == 0 ? "no" : neg->runner_writable > 0 ? "YES" : "unknown");
     if (neg->missing_mask) {
         fprintf(out, "  WARNING: missing required layers -> guarantees reduced\n");
     }

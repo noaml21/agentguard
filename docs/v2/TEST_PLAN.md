@@ -61,8 +61,27 @@ just exit codes.
   cgroup's child list and `subtree_control` are identical before/after. The escapee
   fixture waits until the escapee is in its own session: without that wait the ordinary
   group teardown kills it and the case proves nothing (bug found while writing the test).
-- **Phase 8**: malformed policies rejected with useful errors; policy file inside the
-  writable workspace refused; sandboxed process cannot modify the policy/binary.
+- **Phase 8** (`sandbox/tests/policy_test.sh`, 66 cases): valid minimal and full policies
+  (comments, blank lines, a read path with spaces) with effects checked (workspace write,
+  read through the spaced path, EFBIG at the policy's file-size bound, status JSON). No-merge
+  precedence: `--policy` plus each covered CLI flag (and a second `--policy`) exits 125 and
+  never runs the target; `--verbose`/`--degraded` combine. 37 malformed inputs (unknown and
+  duplicate keys, missing or late version, missing workspace, empty file, bad separators,
+  leading/trailing space, empty value, bad enum/boolean/timeout incl. `1e3`/`nan`, negative,
+  overflow, out-of-range, relative/`..`/`//`/trailing-slash paths, writable `/`, tab, CRLF,
+  NUL, non-ASCII, >64 KiB, >1024 lines, over-long line, >64 paths, duplicate/contradictory
+  paths): each exits 125, the target's marker file never appears, the error mentions the
+  policy, and the invalid value (`SECRET123`) is not echoed. Location: refused inside the
+  workspace, under default-writable `/tmp`, inside a `write` root, via a symlink, via a
+  symlinked directory, via `.` and relative spellings, group-writable, directory, missing.
+  The same `/tmp` location is accepted when the policy disables default writes
+  (discrimination: the check follows the effective roots). Integrity: a sandboxed script
+  tries 17 write/replace spellings (redirect, truncate, append, mv, rm, symlink, rename-over,
+  cp-over, hard link + write, python write/rename/truncate/unlink/symlink, grandchild,
+  `./` and `../` spellings, create in the control dir) on the policy and a runner copy; the
+  sha256, inode, size and directory listing are unchanged, the next run works, and the
+  runner copy still executes. A runner copy inside the workspace is refused in policy mode
+  and reported in CLI mode. CLI `--timeout nan` is rejected (shared parser).
 - **Phase 9**: signal to an outside same-UID process denied (scope); ptrace denied;
   abstract unix connect to outside listener denied; pathname unix socket outside
   workspace (documented per ABI).

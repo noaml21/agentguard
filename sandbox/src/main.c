@@ -1,9 +1,11 @@
 #define _GNU_SOURCE
 #include "lifecycle.h"
 #include "options.h"
+#include "policyfile.h"
 #include "sandbox.h"
 #include "util.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -34,12 +36,45 @@ int main(int argc, char **argv)
         return AG_EXIT_SETUP_FAILURE;
     }
 
+    /* Policy file: validated completely in the parent before anything forks. It
+     * is the single source of the settings it covers -- no CLI merge. */
+    if (opts.policy_path) {
+        if (opts.policy_conflict) {
+            ag_warnf("%s cannot be combined with --policy (the policy file is the single "
+                     "source of that setting)", opts.policy_conflict);
+            return AG_EXIT_SETUP_FAILURE;
+        }
+        if (pf_load(opts.policy_path, &opts) != 0)
+            return AG_EXIT_SETUP_FAILURE;
+    }
+
+    /* Control-plane integrity: could the target replace this runner binary for a
+     * future run? Refused in policy mode, reported otherwise. */
+    struct ag_policy effective;
+    ag_policy_from_options(&effective, &opts);
+    char exe[PATH_MAX];
+    long exe_len = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    int runner_writable = -1;
+    if (exe_len > 0) {
+        exe[exe_len] = '\0';
+        runner_writable = ag_path_in_writable(exe, &effective);
+    }
+    if (opts.policy_path && runner_writable != 0) {
+        ag_warnf("policy mode: the agentguard-run binary is %s a root the sandboxed target "
+                 "can write (it could replace the runner for the next run); install it "
+                 "outside the workspace and writable paths",
+                 runner_writable > 0 ? "inside" : "not verifiably outside");
+        return AG_EXIT_SETUP_FAILURE;
+    }
+
     enum ag_mode mode = opts.degraded ? AG_MODE_DEGRADED : AG_MODE_STRICT;
     struct ag_negotiation neg;
     int neg_rc = ag_negotiate(mode, opts.net_mode, &neg);
     neg.timeout_ms = opts.timeout_ms;
     neg.max_fsize = opts.max_fsize;
     neg.max_nofile = opts.max_nofile;
+    neg.policy_used = opts.policy_path != NULL;
+    neg.runner_writable = runner_writable;
 
     if (opts.print_status) {
         ag_print_status(1, &neg, 0, opts.json);
