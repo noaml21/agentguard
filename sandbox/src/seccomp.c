@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -91,6 +92,30 @@ static const int kDenied[] = {
 #ifdef SYS_open_by_handle_at
     SYS_open_by_handle_at, /* open by file handle, bypassing path resolution; needs caps; belt-and-suspenders */
 #endif
+#ifdef SYS_fsopen
+    SYS_fsopen,            /* new mount API: create a superblock without mount(); needs caps; none */
+#endif
+#ifdef SYS_fsconfig
+    SYS_fsconfig,          /* new mount API: configure a superblock; needs caps; none */
+#endif
+#ifdef SYS_fsmount
+    SYS_fsmount,           /* new mount API: attach a superblock without mount(); needs caps; none */
+#endif
+#ifdef SYS_pidfd_getfd
+    SYS_pidfd_getfd,       /* steal an fd from another same-UID process (authority leak); not needed; low impact */
+#endif
+#ifdef SYS_syslog
+    SYS_syslog,            /* read/clear the kernel ring buffer (info leak); not needed; low impact */
+#endif
+#ifdef SYS_io_uring_setup
+    SYS_io_uring_setup,    /* io_uring ops (e.g. IORING_OP_SOCKET) bypass per-syscall seccomp rules; libuv etc. fall back; low impact */
+#endif
+#ifdef SYS_io_uring_enter
+    SYS_io_uring_enter,    /* io_uring (see io_uring_setup); low impact */
+#endif
+#ifdef SYS_io_uring_register
+    SYS_io_uring_register, /* io_uring (see io_uring_setup); low impact */
+#endif
 #ifdef SYS_swapon
     SYS_swapon,            /* enable swap; needs caps; none */
 #endif
@@ -98,6 +123,18 @@ static const int kDenied[] = {
     SYS_swapoff,           /* disable swap; needs caps; none */
 #endif
 };
+
+/* Namespace-creation flags for clone(2). We cannot deny clone() outright because
+ * glibc fork()/pthread_create route through clone/clone3, so we filter the flags
+ * argument instead: clone() with any new-namespace bit is denied. This closes the
+ * "create a user namespace via clone instead of unshare" escape.
+ * clone3(2) takes a struct pointer that seccomp cannot dereference, so its flags
+ * cannot be filtered. Instead clone3 returns ENOSYS: glibc (pthread_create,
+ * posix_spawn) and other runtimes treat that as "old kernel" and fall back to
+ * clone(), which the flag filter covers. CLONE_NEWTIME is only expressible via
+ * clone3/unshare, both of which are denied. */
+#define AG_CLONE_NEW_MASK 0x7E020000u
+/* = CLONE_NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|NEWNET */
 
 int sc_available(void)
 {
@@ -114,7 +151,7 @@ int sc_available(void)
     return errno == EINVAL ? 1 : 0;
 }
 
-int sc_apply(void)
+int sc_apply(int deny_inet)
 {
     if (AG_AUDIT_ARCH == 0) {
         errno = ENOSYS;
@@ -122,8 +159,9 @@ int sc_apply(void)
     }
 
     size_t ndeny = sizeof(kDenied) / sizeof(kDenied[0]);
-    /* header (arch guard 3) + x32 guard (2) + load nr (1) + 2 per deny + allow (1) */
-    struct sock_filter prog[3 + 2 + 1 + 2 * (sizeof(kDenied) / sizeof(kDenied[0])) + 1];
+    /* header(3)+x32(2)+load nr(1)+2*deny+clone3(2)+clone block(5)+socket block(6)+allow(1) */
+    struct sock_filter prog[3 + 2 + 1 + 2 * (sizeof(kDenied) / sizeof(kDenied[0])) + 2 + 5 +
+                            6 + 1];
     size_t n = 0;
 
     /* Load arch; kill if it isn't what we built for (blocks int-0x80 / wrong ABI). */
@@ -142,13 +180,66 @@ int sc_apply(void)
     prog[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
 #endif
 
-    /* Deny-list: if nr == denied, return EPERM; else fall through. */
+    /* Deny-list: if nr == denied, return EPERM; else fall through. A holds nr. */
     for (size_t i = 0; i < ndeny; i++) {
         prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
                                                  (uint32_t)kDenied[i], 0, 1);
         prog[n++] = (struct sock_filter)BPF_STMT(
             BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
     }
+
+#ifdef SYS_clone3
+    /* clone3 -> ENOSYS so callers fall back to the flag-filtered clone(). */
+    prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                             (uint32_t)SYS_clone3, 0, 1);
+    prog[n++] = (struct sock_filter)BPF_STMT(
+        BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA));
+#endif
+
+#ifdef SYS_clone
+    /* clone() with any new-namespace flag is denied (fork/threads use clone with
+     * no NEW bits, so they pass). A still holds nr here. This 5-instruction block
+     * clobbers A, so the socket block below reloads nr. */
+    /* [0] if nr==clone fall through, else skip the block (4 instrs). */
+    prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                             (uint32_t)SYS_clone, 0, 4);
+    /* [1] load clone flags = args[0] low 32 bits. */
+    prog[n++] = (struct sock_filter)BPF_STMT(
+        BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0]));
+    /* [2] mask to the new-namespace bits. */
+    prog[n++] = (struct sock_filter)BPF_STMT(BPF_ALU | BPF_AND | BPF_K, AG_CLONE_NEW_MASK);
+    /* [3] if no NEW bit set, skip the deny (allow via later default). */
+    prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
+    /* [4] a new-namespace clone: deny. */
+    prog[n++] = (struct sock_filter)BPF_STMT(
+        BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
+#endif
+
+#ifdef SYS_socket
+    /* Network mode none: socket() is allowed only for AF_UNIX (local IPC) and
+     * AF_NETLINK (local kernel queries such as interface lists; cannot carry
+     * traffic off-host). Every other family -- AF_INET/AF_INET6 (TCP, UDP, raw
+     * IP), AF_PACKET, AF_VSOCK, AF_BLUETOOTH, ... -- fails with EACCES. An
+     * allowlist rather than a deny-list so a family we did not think of is
+     * denied by default. 6-instruction block, relative jumps computed by hand. */
+    if (deny_inet) {
+        /* [0] reload nr (the clone block above may have left flags in A). */
+        prog[n++] = (struct sock_filter)BPF_STMT(
+            BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
+        /* [1] if nr==socket fall through, else skip [2..5] to the ALLOW. */
+        prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                 (uint32_t)SYS_socket, 0, 4);
+        /* [2] load args[0] low 32 bits = address family (kernel takes an int). */
+        prog[n++] = (struct sock_filter)BPF_STMT(
+            BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0]));
+        /* [3],[4] allowed local families jump over the deny to the ALLOW. */
+        prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 2, 0);
+        prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_NETLINK, 1, 0);
+        /* [5] any other family: deny. */
+        prog[n++] = (struct sock_filter)BPF_STMT(
+            BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EACCES & SECCOMP_RET_DATA));
+    }
+#endif
 
     /* Default: allow (execve and all ordinary syscalls). */
     prog[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);

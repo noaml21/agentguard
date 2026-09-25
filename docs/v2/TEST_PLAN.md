@@ -34,8 +34,20 @@ just exit codes.
   grandchild); required reads permitted.
 - **Phase 5**: each denied syscall returns the documented errno; allowed ordinary work
   (compilers, git, python) succeeds; restrictions inherited by descendants.
-- **Phase 6**: per network mode: TCP connect to a local listener allowed/denied as
-  specified; UDP send allowed/denied as specified; AF_UNIX local IPC works.
+- **Phase 6** (`sandbox/tests/network_test.sh`, 21 cases; seccomp hardening in
+  `seccomp_test.sh`): loopback TCP+UDP listeners on 127.0.0.1 and ::1 run *outside* the
+  sandbox and log every accepted connection/datagram. `none`: IPv4/IPv6 TCP connect and UDP
+  send fail with EACCES; raw IP, AF_PACKET, AF_VSOCK denied; bash `/dev/tcp` and a descendant
+  denied; default is `none`; the listeners' log stays **empty** (effect oracle); AF_UNIX
+  socketpair + pathname socket round trip works. `all`: IPv4 TCP/UDP and IPv6 TCP arrive at
+  the listeners; descendant connects; AF_UNIX works. Contract: status JSON reports mode and
+  `enforced`; strict + seccomp unavailable refuses (125); degraded reports `enforced:false`
+  and warns; invalid `--net` value rejected. IPv6 cases skip with a reason if `::1` is absent.
+  Seccomp hardening: clone(CLONE_NEWUSER|CLONE_NEWNET) EPERM, clone3 ENOSYS, fsopen,
+  pidfd_getfd, io_uring_setup EPERM; fork+pthread, python threads+subprocess, git
+  init/add/commit still work. Discrimination baseline (same helper, unsandboxed, dev host):
+  clone(NEWUSER) and clone3 **succeed**, pidfd_getfd → EBADF, io_uring_setup → EFAULT; fsopen
+  and clone(NEWNET) are EPERM even unsandboxed (not independently proven there).
 - **Phase 8**: malformed policies rejected with useful errors; policy file inside the
   writable workspace refused; sandboxed process cannot modify the policy/binary.
 - **Phase 9**: signal to an outside same-UID process denied (scope); ptrace denied;

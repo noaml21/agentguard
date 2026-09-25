@@ -36,7 +36,7 @@ int main(int argc, char **argv)
 
     enum ag_mode mode = opts.degraded ? AG_MODE_DEGRADED : AG_MODE_STRICT;
     struct ag_negotiation neg;
-    int neg_rc = ag_negotiate(mode, &neg);
+    int neg_rc = ag_negotiate(mode, opts.net_mode, &neg);
 
     if (opts.print_status) {
         ag_print_status(1, &neg, 0, opts.json);
@@ -55,6 +55,11 @@ int main(int argc, char **argv)
 
     if (opts.verbose && neg.missing_mask)
         ag_print_status(2, &neg, 0, opts.json);
+
+    /* Degraded mode never hides a lost network guarantee, verbose or not. */
+    if (!ag_net_enforced(&neg, neg.requested_mask))
+        ag_warnf("degraded: --net none is NOT enforced (seccomp unavailable); "
+                 "IP networking is allowed for this run");
 
     return lifecycle_run(&opts, &neg);
 }

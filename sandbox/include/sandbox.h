@@ -52,6 +52,7 @@ struct ag_negotiation {
     uint32_t requested_mask;
     uint32_t required_mask; /* subset of requested that must apply */
     uint32_t missing_mask;  /* required but unavailable (degraded reporting) */
+    enum ag_net_mode net_mode; /* requested network mode; none is enforced by seccomp */
 };
 
 #define AG_LAYER_BIT(layer) (1u << (layer))
@@ -63,7 +64,11 @@ const char *ag_layer_name(enum ag_layer layer);
  * if any required layer is unavailable, fills missing_mask and returns -1 (the
  * caller must refuse before fork). In degraded mode, unavailable required layers
  * are moved out of requested into missing_mask and 0 is returned. */
-int ag_negotiate(enum ag_mode mode, struct ag_negotiation *neg);
+int ag_negotiate(enum ag_mode mode, enum ag_net_mode net_mode, struct ag_negotiation *neg);
+
+/* 1 if the requested network mode is (or, pre-run, will be) enforced given the
+ * layers in mask: net=all needs nothing; net=none needs the seccomp layer. */
+int ag_net_enforced(const struct ag_negotiation *neg, uint32_t mask);
 
 /* Child side: apply every requested layer in order, recording applied ones.
  * Layers are applied in enum order, which encodes the required setup sequence

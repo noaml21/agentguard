@@ -57,9 +57,9 @@ The runner re-probes at every start; nothing above is hardcoded.
 |---|---|---|
 | no_new_privs | Blocks setuid/file-capability privilege gain; prerequisite for unprivileged Landlock and seccomp | always required |
 | Landlock FS | Kernel filesystem access control on inode-bound rules | required by default |
-| Landlock net (ABI ≥ 4) | TCP bind/connect restricted **by port only** | required when network mode needs it |
-| Landlock scope (ABI ≥ 6) | Blocks signals and abstract-unix connects to processes outside the sandbox domain | required by default when ABI ≥ 6 |
-| seccomp-BPF | Denies syscalls outside the coding-agent threat envelope; socket family filter | required by default |
+| Landlock net (ABI ≥ 4) | TCP bind/connect restricted **by port only** | not used in Core (see Network modes) |
+| Landlock scope (ABI ≥ 6) | Blocks signals and abstract-unix connects to processes outside the sandbox domain | planned (Phase 9); **not applied yet** |
+| seccomp-BPF | Denies syscalls outside the coding-agent threat envelope; clone-flag filter; socket family filter (`--net none`) | required by default |
 | rlimits | Per-process bounds (core dumps, fsize, etc.) with honest semantics | optional |
 | Wall-clock deadline | Tree termination after a timeout | optional |
 | cgroup v2 kill | Reliable tree kill incl. setsid escapers, when a writable cgroup exists | optional (reported) |
@@ -125,7 +125,53 @@ Installed **last** (after Landlock) so the filter never has to permit setup sysc
   without a cgroup it is still reaped once reparented but may not receive group
   signals. cgroup.kill (when available) closes this gap. Details in Phase 2/7.
 
-## Network modes
+## Network modes (Phase 6, implemented)
 
-Defined in Phase 6. The development host has Landlock TCP (port-only) and no Landlock UDP,
-and no namespaces, so there is no destination filtering and no namespace isolation.
+`--net none|all`, default `none`. The development host has Landlock TCP (port-only), no
+Landlock UDP (ABI 10), and no usable namespaces, so AgentGuard offers **no destination/IP
+filtering and no network-namespace isolation**. The one strong unprivileged primitive is a
+seccomp filter on `socket()`'s address-family argument, which gives all-or-nothing IP
+networking:
+
+| Mode | Mechanism | Effect |
+|---|---|---|
+| `none` (default) | seccomp: `socket()` allowed only for `AF_UNIX` and `AF_NETLINK`; every other family → `EACCES` | No TCP/UDP/raw IP (v4 and v6), no `AF_PACKET`, `AF_VSOCK`, … . Allowlist, so an unanticipated family is denied. AF_UNIX local IPC and netlink queries (interface lists; cannot carry traffic off-host) work. |
+| `all` | no network rule | Host networking as the invoking user (intended for `-- claude`, which needs its API). Other layers unchanged. |
+
+- Enforcement point is socket *creation*, so it covers every protocol and every spelling
+  (python, bash `/dev/tcp`, compiled code) and is inherited by all descendants. `io_uring`
+  (whose `IORING_OP_SOCKET` would bypass per-syscall seccomp) is denied in every mode.
+- There is no `socketcall(2)` on x86_64/aarch64, and the arch guard kills foreign-ABI
+  syscalls, so there is no alternate entry point to `socket()`.
+- `none` depends on the seccomp layer. In strict mode seccomp is required, so an
+  unavailable seccomp refuses the run. In explicit `--degraded` mode the run proceeds but
+  `--status` reports `"network":{"mode":"none","enforced":false}` and every run prints a
+  warning; `none` is never silently downgraded.
+- Landlock TCP port rules (PLAN 6.2) are **not used** in Core: port-only TCP filtering
+  without UDP coverage cannot express a truthful intermediate mode on ABI 8. Deferred.
+- **Residual (VERIFIED on the dev host, all modes):** AF_UNIX connections to same-UID host
+  services are not mediated (Landlock pathname-unix control needs ABI 9; abstract-unix
+  scoping is not applied yet). From inside `--net none`, `systemd-run --user` over the
+  session D-Bus socket started a process with `Seccomp: 0`, `NoNewPrivs: 0` and working
+  `AF_INET` sockets, i.e. **outside every AgentGuard layer**. Same-host services may also
+  relay traffic (e.g. systemd-resolved DNS). This is the Phase 9 host-IPC surface; until it
+  is closed, no V2 guarantee holds against an adversary that uses it.
+
+`--status` (text and `--json`) reports the requested network mode and whether it is enforced.
+
+## seccomp argument filters (Phase 6 additions)
+
+The Phase 5 deny-list stays flat; Phase 6 added three small hand-computed blocks after it:
+
+1. `clone3` → `ENOSYS`. Its flags live in a user-memory struct seccomp cannot read. glibc
+   (`pthread_create`, `posix_spawn`) and other runtimes treat `ENOSYS` as "old kernel" and
+   fall back to `clone()`.
+2. `clone()` with any `CLONE_NEW*` bit (`NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|NEWNET`,
+   mask `0x7E020000`) → `EPERM`. `fork`/threads pass (no namespace bits). Together with the
+   existing `unshare`/`setns` denials and (1), no namespace can be created or joined via these
+   syscalls; `CLONE_NEWTIME` is only expressible through `clone3`/`unshare`.
+3. `socket()` family allowlist in `--net none` (above).
+
+New deny-list entries: `fsopen`, `fsconfig`, `fsmount` (new mount API), `pidfd_getfd`
+(steal an fd from another same-UID process), `syslog` (kernel log), `io_uring_setup/enter/
+register` (io_uring operations bypass per-syscall filtering).

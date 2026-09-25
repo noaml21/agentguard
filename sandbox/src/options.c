@@ -23,6 +23,8 @@ void options_usage(const char *prog)
         "  --allow-read PATH   Additionally allow read+execute under PATH. Repeat.\n"
         "  --allow-write PATH  Additionally allow read+write under PATH. Repeat.\n"
         "  --no-default-reads  Do not allow the default system read locations.\n"
+        "  --net none|all      none (default): deny all IP networking (TCP/UDP/raw);\n"
+        "                      all: allow host networking (intentional egress).\n"
         "  --strict            Refuse to run unless every required layer applies\n"
         "                      (default).\n"
         "  --degraded          Run even if a required layer is unavailable, and\n"
@@ -135,6 +137,21 @@ int options_parse(int argc, char **argv, struct options *opts)
         }
         if (strcmp(arg, "--no-default-reads") == 0) {
             opts->no_default_reads = 1;
+            continue;
+        }
+        if (strcmp(arg, "--net") == 0) {
+            if (++i >= argc) {
+                ag_warnf("--net requires an argument (none|all)");
+                return -1;
+            }
+            if (strcmp(argv[i], "none") == 0) {
+                opts->net_mode = AG_NET_NONE;
+            } else if (strcmp(argv[i], "all") == 0) {
+                opts->net_mode = AG_NET_ALL;
+            } else {
+                ag_warnf("invalid --net value: %s (expected none|all)", argv[i]);
+                return -1;
+            }
             continue;
         }
         if (strcmp(arg, "--timeout") == 0) {

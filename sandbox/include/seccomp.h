@@ -14,7 +14,10 @@
 int sc_available(void);
 
 /* Child side: install the filter. Requires no_new_privs to have been set.
+ * If deny_inet is nonzero, socket() is allowed only for AF_UNIX and AF_NETLINK;
+ * every other family (AF_INET/AF_INET6 TCP+UDP+raw, AF_PACKET, AF_VSOCK, ...)
+ * fails with EACCES.
  * Returns 0 on success, -1 on failure (errno set). */
-int sc_apply(void);
+int sc_apply(int deny_inet);
 
 #endif

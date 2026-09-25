@@ -124,6 +124,7 @@ static void child_exec(const struct options *opts, const struct ag_negotiation *
     memset(&fspol, 0, sizeof fspol);
     fspol.workspace = opts->workspace ? opts->workspace : ".";
     fspol.no_default_reads = opts->no_default_reads;
+    fspol.net_mode = opts->net_mode;
     for (size_t i = 0; i < opts->nread && fspol.nread < AG_MAX_PATHS; i++)
         fspol.read_paths[fspol.nread++] = opts->read_paths[i];
     for (size_t i = 0; i < opts->nwrite && fspol.nwrite < AG_MAX_PATHS; i++)

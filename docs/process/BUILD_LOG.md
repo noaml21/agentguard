@@ -164,3 +164,42 @@ updated to use an explicit minimal policy so its /tmp-based "outside" is truly o
 writable set.
 
 Full suite: `make check` = 18+12+14+8+5 = 57 tests green; `make check-asan` all 57 clean.
+
+## 2026-09-24/25 — Sessions 1–2: Phase 6 (network policy modes + seccomp hardening)
+
+Session 1 wrote the network core (`--net none|all`, `enum ag_net_mode`, `sc_apply(deny_inet)`,
+`tests/network_test.sh`) and smoke-tested it green, then added seccomp hardening from a
+security-review finding (`allowlist-semantic-escape`: fsopen/fsconfig/fsmount, pidfd_getfd,
+syslog, clone() CLONE_NEW* flag filter). It stopped at the live V1 Bash limit (51/50) with
+the hardening unbuilt; the session cwd was `sandbox/`, so the file-policy hook blocked writes
+to `docs/process/*` and a temporary `sandbox/RESUME.md` held the checkpoint. Session 2
+(cwd = repo root) folded that file into these docs and removed it.
+
+Session 2 verified the preserved BPF (clone block: jf=4 / jt=1; socket block reload of `nr`
+because the clone block clobbers A) and then changed:
+- socket rule: deny-list (INET/INET6/PACKET) → **allowlist** (AF_UNIX, AF_NETLINK), so
+  AF_VSOCK and other families are denied too. Block is 6 instructions.
+- `clone3` → ENOSYS so libc falls back to the flag-filtered `clone()` (closes the clone3
+  namespace path instead of only documenting it).
+- `io_uring_setup/enter/register` denied (IORING_OP_SOCKET/CONNECT would bypass seccomp).
+- network mode is part of `ag_negotiation`; `--status`/`--json` report
+  `"network":{"mode":…,"enforced":…}`; degraded runs with seccomp missing warn that
+  `--net none` is not enforced (no silent downgrade).
+- tests: network_test.sh rewritten around out-of-sandbox loopback listeners that log arrivals
+  (21 cases incl. IPv6, raw/AF_PACKET/AF_VSOCK, bash /dev/tcp, descendants, contract);
+  seccomp_test.sh +9 cases (clone flags, clone3, fsopen, pidfd_getfd, io_uring, fork+pthread,
+  python threads/subprocess, git).
+
+Baseline (same helper unsandboxed): clone(NEWUSER) and clone3 succeed, pidfd_getfd EBADF,
+io_uring_setup EFAULT → those tests discriminate. fsopen and clone(NEWNET) are EPERM even
+unsandboxed (no caps); syslog not tested (dmesg_restrict=1 makes it EPERM regardless).
+
+**Finding (VERIFIED escape, all modes):** inside `--net none`, `systemd-run --user --wait`
+over `/run/user/1000/bus` launched a process with `Seccomp: 0`, `NoNewPrivs: 0` and a working
+AF_INET socket. AF_UNIX connects to same-UID services are unmediated at Landlock ABI 8.
+Recorded in THREAT_MODEL §4.1 and ARCHITECTURE; to be addressed in Phase 9. Landlock TCP port
+rules (PLAN 6.2) deliberately not used — port-only TCP without UDP cannot back a truthful
+intermediate mode on this kernel.
+
+Verified: `make -C sandbox check` = 18+12+14+17+21+5 = **87** green; `make -C sandbox
+check-asan` = **87** green, no sanitizer reports.

@@ -24,6 +24,7 @@ struct options {
     const char *write_paths[AG_MAX_PATHS];
     size_t nwrite;
     int no_default_reads;                /* drop the system read allowlist */
+    enum ag_net_mode net_mode;           /* AG_NET_NONE (default) or AG_NET_ALL */
     int degraded;        /* AG_MODE_DEGRADED when set, else strict */
     int verbose;         /* print negotiation + applied layers to stderr */
     int print_status;    /* print the layer table and exit without running */

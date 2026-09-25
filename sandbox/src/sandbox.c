@@ -45,8 +45,7 @@ static int probe_seccomp(void)
 
 static int apply_seccomp(const struct ag_policy *pol)
 {
-    (void)pol;
-    return sc_apply();
+    return sc_apply(pol->net_mode == AG_NET_NONE);
 }
 
 struct layer_def {
@@ -110,10 +109,11 @@ static int env_lists_layer(const char *var, const char *name)
 
 /* ---- Negotiation (parent) ---------------------------------------------- */
 
-int ag_negotiate(enum ag_mode mode, struct ag_negotiation *neg)
+int ag_negotiate(enum ag_mode mode, enum ag_net_mode net_mode, struct ag_negotiation *neg)
 {
     memset(neg, 0, sizeof *neg);
     neg->mode = mode;
+    neg->net_mode = net_mode;
 
     for (int i = 0; i < AG_LAYER_COUNT; i++) {
         uint32_t bit = AG_LAYER_BIT(i);
@@ -194,10 +194,20 @@ static const char *layer_state(const struct ag_negotiation *neg, uint32_t applie
     return "off";
 }
 
+int ag_net_enforced(const struct ag_negotiation *neg, uint32_t mask)
+{
+    if (neg->net_mode == AG_NET_ALL)
+        return 1;
+    return (mask & AG_LAYER_BIT(AG_LAYER_SECCOMP)) != 0;
+}
+
 void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
                      int as_json)
 {
     FILE *out = (fd == 2) ? stderr : stdout;
+    /* Pre-run (applied==0) report what will be enforced; post-run what was. */
+    int net_ok = ag_net_enforced(neg, applied ? applied : neg->requested_mask);
+    const char *net_name = neg->net_mode == AG_NET_NONE ? "none" : "all";
     if (as_json) {
         fprintf(out, "{\"mode\":\"%s\",\"layers\":[",
                 neg->mode == AG_MODE_STRICT ? "strict" : "degraded");
@@ -212,7 +222,8 @@ void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
                     (neg->required_mask & bit) ? "true" : "false",
                     (applied & bit) ? "true" : "false");
         }
-        fprintf(out, "]}\n");
+        fprintf(out, "],\"network\":{\"mode\":\"%s\",\"enforced\":%s}}\n", net_name,
+                net_ok ? "true" : "false");
         return;
     }
     fprintf(out, "AgentGuard sandbox status (mode=%s)\n",
@@ -224,6 +235,15 @@ void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
                 layer_state(neg, applied, i),
                 (neg->required_mask & bit) ? "yes" : "no");
     }
+    if (neg->net_mode == AG_NET_ALL)
+        fprintf(out, "  %-16s %s\n", "network",
+                "all (host networking allowed; no destination filtering)");
+    else if (net_ok)
+        fprintf(out, "  %-16s %s\n", "network",
+                "none (socket() limited to AF_UNIX/AF_NETLINK via seccomp)");
+    else
+        fprintf(out, "  %-16s %s\n", "network",
+                "none REQUESTED but NOT ENFORCED (seccomp missing): IP networking allowed");
     if (neg->missing_mask) {
         fprintf(out, "  WARNING: missing required layers -> guarantees reduced\n");
     }

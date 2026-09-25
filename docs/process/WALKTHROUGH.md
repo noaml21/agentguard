@@ -118,3 +118,32 @@ mount manipulation (`unshare`, `setns`, `mount`, `pivot_root`, `chroot`, …), k
 reboot, `bpf`, `perf_event_open`, and `open_by_handle_at`. Denied calls return `EPERM` so a
 program gets a clean, handleable error rather than being killed. The filter is inherited by
 every `fork`/`exec` descendant, so the restriction cannot be shed by spawning a child.
+
+## Network modes and clone filtering (Phase 6)
+
+`--net none` (the default) is a seccomp rule on `socket()`'s first argument, the address
+family: only `AF_UNIX` and `AF_NETLINK` may be created; everything else gets `EACCES`. We
+chose an allowlist of families rather than a deny-list of `AF_INET`/`AF_INET6` so that a
+family nobody thought about (`AF_VSOCK`, `AF_BLUETOOTH`, …) is denied by default. Denying at
+socket *creation* means TCP, UDP and raw IP are all covered with one rule, and it does not
+matter how the program spells the request — Python, bash's `/dev/tcp`, or C all end in the
+same syscall. `--net all` simply omits the rule. There is no in-between mode: Landlock on
+this kernel can only filter TCP by port and cannot see UDP at all, so a "some network" mode
+would claim more than the kernel enforces.
+
+`io_uring` is denied in every mode because its submission queue can perform socket, connect
+and open operations without making the corresponding syscalls, which would slip past any
+per-syscall seccomp rule.
+
+Namespaces: `unshare`/`setns` were already denied, but `clone(CLONE_NEWUSER)` creates a
+namespace too — and on this host it *succeeds* for an unprivileged process. We cannot deny
+`clone()` outright (fork and threads use it), so the filter loads the flags argument, masks
+the `CLONE_NEW*` bits, and denies only if any are set. `clone3()` passes its flags inside a
+struct in user memory that seccomp cannot read, so we return `ENOSYS` for it; glibc and other
+runtimes interpret that as an older kernel and fall back to `clone()`, where the flag filter
+applies. The tests confirm fork, pthreads, Python threads/subprocess and git still work.
+
+What `--net none` does *not* do: it does not stop the sandboxed tree from talking to
+same-UID services over Unix sockets. The Phase 6 probe showed the worst case — asking the
+user systemd manager over D-Bus to start a process, which then runs with no AgentGuard
+restrictions at all. That is recorded as a verified residual and belongs to Phase 9.
