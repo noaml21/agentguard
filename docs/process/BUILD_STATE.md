@@ -17,6 +17,15 @@
 - **Open finding for Phase 9 (VERIFIED escape)**: same-UID AF_UNIX services are reachable;
   `systemd-run --user` via the session D-Bus spawns an unconfined process from inside the
   sandbox (THREAT_MODEL §4.1). Landlock ABI 8 cannot mediate pathname-unix connects.
+- **Phase 9 baseline (measured 2026-09-26, no code changed)**: Landlock scoping
+  (abstract-unix + signal) works on ABI 8 in a standalone probe (EPERM for outside kill and
+  abstract connect; socketpair ok). Current runner: outside `kill -0`, `pidfd_send_signal`,
+  `prlimit --pid` (effect verified), abstract connect (effect verified), and session-bus
+  connect all SUCCEED. Probe source is reproduced in BUILD_LOG (Phase 9 baseline).
+  Suggested first slice: add a `landlock_scope` layer (probe ABI>=6; `scoped` field in the
+  ruleset attr — Ubuntu's UAPI headers may lack it, define the struct locally like the
+  probe did), plus a seccomp rule allowing `prlimit64` only with pid arg 0 (check glibc
+  `setrlimit`/`getrlimit` → prlimit64(0,…) first), then the host-IPC test suite.
 - **Next action (Phase 9)**, in a FRESH Claude session (Bash limit): (1) re-reproduce the
   systemd-run escape with an effect oracle (outside process ran? its Seccomp/NoNewPrivs);
   (2) check what Landlock ABI 8 scoping gives (LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET,

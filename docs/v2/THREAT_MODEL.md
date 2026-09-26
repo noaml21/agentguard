@@ -51,7 +51,9 @@ Every row below is subject to the **host-IPC residual** in §4.1.
 | Malformed policy never runs the target | VERIFIED (Phase 8, 37 malformed-input cases) | same | — |
 | Target cannot alter the policy used by the next run | VERIFIED in policy mode (location check + Landlock; 17 attack spellings leave bytes/inode/listing unchanged) | same | — |
 | Target cannot replace the runner binary for the next run | VERIFIED in policy mode (refused if inside a writable root); CLI mode: DEGRADED — only reported in status | same | — |
-| Same-UID signals to outside processes | planned (Landlock scope, Phase 9); not applied | — | — |
+| Same-UID signals to outside processes | **VERIFIED GAP**: `kill(outside,0)` and `pidfd_send_signal` permitted from the sandbox (2026-09-26 probe). Landlock `SCOPE_SIGNAL` measured working on ABI 8 but not applied yet (Phase 9) | — | — |
+| Abstract AF_UNIX to outside listeners | **VERIFIED GAP**: connect reached an outside listener. Landlock `SCOPE_ABSTRACT_UNIX_SOCKET` measured working on ABI 8, not applied yet (Phase 9) | — | — |
+| Resource limits of outside same-UID processes | **VERIFIED GAP**: `prlimit --pid <outside>` changed the sentinel's limits (Phase 9) | — | — |
 | Same-UID ptrace | VERIFIED seccomp deny; Yama scope 1 ASSUMED as backstop | — | — |
 
 ### 4.1 Known residuals (current)
@@ -78,8 +80,16 @@ Every row below is subject to the **host-IPC residual** in §4.1.
   disk. The cgroup tier kills, it does not limit. Processes started through the host-IPC
   escape above are outside the owned cgroup.
 - **`prlimit64` on other same-UID processes** is not filtered (it is also how the target
-  sets its own limits); a sandboxed process can lower an outside process's rlimits. Phase 9
-  inventory item.
+  sets its own limits). VERIFIED 2026-09-26: from inside the sandbox, `prlimit --pid` set an
+  outside sentinel's `RLIMIT_NOFILE` to 77 (read back from `/proc/<pid>/limits` outside).
+- **Phase 9 baseline probe (2026-09-26, dev host)**, from inside `agentguard-run --net none`
+  against disposable outside fixtures: `kill(outside, 0)` permitted; `pidfd_open` +
+  `pidfd_send_signal(…, 0)` permitted; abstract-unix connect to an outside listener
+  succeeded (listener logged the hit); connect to `/run/user/<uid>/bus` succeeded.
+  A standalone program applying Landlock `scoped = ABSTRACT_UNIX_SOCKET | SIGNAL` on the
+  same kernel got `EPERM` for both the kill and the abstract connect while `socketpair`
+  still worked — so those two surfaces have an available kernel mechanism; pathname
+  AF_UNIX (the D-Bus escape) does not.
 
 ## 5. Non-goals
 

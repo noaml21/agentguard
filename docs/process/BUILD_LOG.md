@@ -257,3 +257,23 @@ Dev-environment notes: the V1 file-policy hook also blocks Write to the session 
 Verified: `tests/policy_test.sh` 66/66; `make -C sandbox check` =
 18+12+14+17+21+14+66+5 = **167**; `check-asan` = **167**, no sanitizer reports. Phase 8
 guarantees remain subject to the verified host-IPC escape (THREAT_MODEL §4.1).
+CI for Phase 8: run 36188382679 green.
+
+## 2026-09-26 — Session 2 (continued): Phase 9 baseline probe (no code change)
+
+Only 4 Bash commands remained in this Claude session, so Phase 9 was not started; one
+disposable probe measured the baseline. Fixtures: an outside `sleep 600` sentinel and an
+outside python listener on abstract socket `\0agp9probe`, both killed afterwards.
+
+1. Standalone C program: `landlock_create_ruleset` with a locally defined attr
+   `{handled_access_fs = 0, handled_access_net = 0, scoped = 1|2}` (ABSTRACT_UNIX_SOCKET |
+   SIGNAL) returned an fd on ABI 8; after `no_new_privs` + `restrict_self`:
+   `kill(sentinel, 0)` = -1 EPERM, abstract connect to the outside listener = -1 EPERM,
+   `socketpair(AF_UNIX)` = 0.
+2. `agentguard-run --workspace <scratch> -- sh -c …` (net none, current layers): `kill -0
+   sentinel` permitted; `prlimit --pid sentinel --nofile=77:77` rc 0 and the sentinel's
+   `/proc/<pid>/limits` read 77/77 from outside; abstract connect succeeded and the
+   listener logged 1 hit; `pidfd_open` + `pidfd_send_signal(fd, 0)` permitted;
+   `connect("/run/user/1000/bus")` succeeded.
+
+Classification recorded in THREAT_MODEL (VERIFIED GAPs). Next steps in BUILD_STATE.
