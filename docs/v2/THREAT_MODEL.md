@@ -51,16 +51,17 @@ Every row below is subject to the **host-IPC residual** in §4.1.
 | Malformed policy never runs the target | VERIFIED (Phase 8, 37 malformed-input cases) | same | — |
 | Target cannot alter the policy used by the next run | VERIFIED in policy mode (location check + Landlock; 17 attack spellings leave bytes/inode/listing unchanged) | same | — |
 | Target cannot replace the runner binary for the next run | VERIFIED in policy mode (refused if inside a writable root); CLI mode: DEGRADED — only reported in status | same | — |
-| Same-UID signals to outside processes | **VERIFIED GAP**: `kill(outside,0)` and `pidfd_send_signal` permitted from the sandbox (2026-09-26 probe). Landlock `SCOPE_SIGNAL` measured working on ABI 8 but not applied yet (Phase 9) | — | — |
-| Abstract AF_UNIX to outside listeners | **VERIFIED GAP**: connect reached an outside listener. Landlock `SCOPE_ABSTRACT_UNIX_SOCKET` measured working on ABI 8, not applied yet (Phase 9) | — | — |
-| Resource limits of outside same-UID processes | **VERIFIED GAP**: `prlimit --pid <outside>` changed the sentinel's limits (Phase 9) | — | — |
-| Same-UID ptrace | VERIFIED seccomp deny; Yama scope 1 ASSUMED as backstop | — | — |
+| Same-UID signals to outside processes (incl. the supervisor) | VERIFIED (Landlock `SCOPE_SIGNAL`, layer `landlock_scope`, ABI ≥ 6; `kill`, SIGTERM, `pidfd_send_signal`, grandchild → EPERM, disposable sentinel alive; Phase 9). `tgkill`/`rt_sigqueueinfo`/SIGIO use the same kernel hook — ASSUMED, not individually tested | layer reported `missing`; VERIFIED that a degraded run can then reach the sentinel | — |
+| Abstract AF_UNIX to outside listeners | VERIFIED (Landlock `SCOPE_ABSTRACT_UNIX_SOCKET`, same layer: target and descendant get EPERM, outside listener logs 0 hits; abstract sockets *inside* the sandbox still work) | layer reported `missing` | — |
+| Resource limits of outside same-UID processes | VERIFIED (seccomp: `prlimit64` only with pid 0; sentinel limits unchanged; self `ulimit`/`setrlimit` work; an explicit own pid is denied too) | only if seccomp applied | — |
+| Same-UID ptrace | VERIFIED seccomp deny (EPERM on `PTRACE_TRACEME`, Phase 5); not yet re-tested against an outside sentinel (Phase 9 remaining). Yama scope 1 is a host setting, not AgentGuard enforcement | — | — |
+| **Pathname AF_UNIX to same-UID host services (session D-Bus, `systemd --user`)** | **OPEN — VERIFIED ESCAPE** (§4.1). No Core mechanism applied; no guarantee in this table holds against a target that uses it | same | — |
 
 ### 4.1 Known residuals (current)
 
 - **Same-UID host IPC escape — VERIFIED, all modes.** AF_UNIX connects to same-UID host
-  services are not mediated at Landlock ABI 8 (pathname-unix needs ABI 9; abstract-unix
-  scoping not applied yet). On the dev host, a process inside `--net none` asked the user
+  services are not mediated at Landlock ABI 8 (pathname-unix needs ABI 9). Abstract-unix
+  and signal scoping are applied since Phase 9 and do not cover pathname sockets. On the dev host, a process inside `--net none` asked the user
   systemd manager (`systemd-run --user`, over `/run/user/1000/bus`) to start a process; that
   process had `Seccomp: 0`, `NoNewPrivs: 0`, and could create `AF_INET` sockets — it is
   outside every V2 layer. Same-host daemons can also relay traffic (e.g. DNS via
@@ -79,10 +80,10 @@ Every row below is subject to the **host-IPC residual** in §4.1.
   individually; a fork-heavy or many-file workload can still exhaust host memory, PIDs, or
   disk. The cgroup tier kills, it does not limit. Processes started through the host-IPC
   escape above are outside the owned cgroup.
-- **`prlimit64` on other same-UID processes** is not filtered (it is also how the target
-  sets its own limits). VERIFIED 2026-09-26: from inside the sandbox, `prlimit --pid` set an
-  outside sentinel's `RLIMIT_NOFILE` to 77 (read back from `/proc/<pid>/limits` outside).
-- **Phase 9 baseline probe (2026-09-26, dev host)**, from inside `agentguard-run --net none`
+- **`prlimit64`**: closed in Phase 9 (seccomp allows only pid 0). Before the rule, the
+  sandbox set an outside sentinel's `RLIMIT_NOFILE` to 77 (read back outside); the same test
+  now leaves it unchanged. Trade-off: `prlimit(getpid(), …)` by explicit pid is also EPERM.
+- **Phase 9 baseline probe (2026-09-26, dev host; before the Phase 9 layers — historical)**, from inside `agentguard-run --net none`
   against disposable outside fixtures: `kill(outside, 0)` permitted; `pidfd_open` +
   `pidfd_send_signal(…, 0)` permitted; abstract-unix connect to an outside listener
   succeeded (listener logged the hit); connect to `/run/user/<uid>/bus` succeeded.

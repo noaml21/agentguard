@@ -58,7 +58,7 @@ The runner re-probes at every start; nothing above is hardcoded.
 | no_new_privs | Blocks setuid/file-capability privilege gain; prerequisite for unprivileged Landlock and seccomp | always required |
 | Landlock FS | Kernel filesystem access control on inode-bound rules | required by default |
 | Landlock net (ABI ≥ 4) | TCP bind/connect restricted **by port only** | not used in Core (see Network modes) |
-| Landlock scope (ABI ≥ 6) | Blocks signals and abstract-unix connects to processes outside the sandbox domain | planned (Phase 9); **not applied yet** |
+| Landlock scope (`landlock_scope`, ABI ≥ 6) | Blocks signals and abstract-unix connects to processes outside the sandbox domain (not pathname sockets) | required by default (Phase 9): strict refuses on ABI < 6; degraded reports it missing |
 | seccomp-BPF | Denies syscalls outside the coding-agent threat envelope; clone-flag filter; socket family filter (`--net none`) | required by default |
 | rlimits | Per-process bounds: core=0 always; `--max-file-size`, `--max-open-files` | core always; others on request |
 | Wall-clock deadline | Tree termination after `--timeout` (lifecycle, Phase 2) | on request |
@@ -82,7 +82,9 @@ The runner re-probes at every start; nothing above is hardcoded.
 5. **`PR_SET_NO_NEW_PRIVS`** — must precede `landlock_restrict_self` and seccomp
    filter installation for an unprivileged process (kernel returns EPERM otherwise).
 6. **Landlock** — create ruleset for the handled access rights the running ABI supports,
-   add rules, `landlock_restrict_self`.
+   add rules, `landlock_restrict_self`. Then a second, scope-only ruleset
+   (`scoped = ABSTRACT_UNIX_SOCKET | SIGNAL`, no handled access rights; the attr struct is
+   defined locally because Ubuntu 24.04's UAPI header lacks `scoped`).
 7. **seccomp filter** — last, so the filter never has to permit setup syscalls
    (landlock_*, prctl, close_range); after it only `execve` remains.
 8. **`execvp`** — the report pipe closes on success (EOF ⇒ parent knows the target
@@ -154,8 +156,8 @@ networking:
 - Landlock TCP port rules (PLAN 6.2) are **not used** in Core: port-only TCP filtering
   without UDP coverage cannot express a truthful intermediate mode on ABI 8. Deferred.
 - **Residual (VERIFIED on the dev host, all modes):** AF_UNIX connections to same-UID host
-  services are not mediated (Landlock pathname-unix control needs ABI 9; abstract-unix
-  scoping is not applied yet). From inside `--net none`, `systemd-run --user` over the
+  services are not mediated (Landlock pathname-unix control needs ABI 9; the Phase 9
+  abstract-unix/signal scope does not cover pathname sockets). From inside `--net none`, `systemd-run --user` over the
   session D-Bus socket started a process with `Seccomp: 0`, `NoNewPrivs: 0` and working
   `AF_INET` sockets, i.e. **outside every AgentGuard layer**. Same-host services may also
   relay traffic (e.g. systemd-resolved DNS). This is the Phase 9 host-IPC surface; until it
@@ -252,6 +254,10 @@ The Phase 5 deny-list stays flat; Phase 6 added three small hand-computed blocks
    existing `unshare`/`setns` denials and (1), no namespace can be created or joined via these
    syscalls; `CLONE_NEWTIME` is only expressible through `clone3`/`unshare`.
 3. `socket()` family allowlist in `--net none` (above).
+
+Phase 9 adds a fourth block (all modes): `prlimit64` with a nonzero pid → `EPERM`, so the
+target can query/set only its own limits (glibc `getrlimit`/`setrlimit`, bash `ulimit`, python
+`resource` and util-linux `prlimit CMD` all pass pid 0 — measured).
 
 New deny-list entries: `fsopen`, `fsconfig`, `fsmount` (new mount API), `pidfd_getfd`
 (steal an fd from another same-UID process), `syslog` (kernel log), `io_uring_setup/enter/

@@ -21,4 +21,15 @@ int ll_abi(void);
  * On success the calling thread and all its future children are restricted. */
 int ll_restrict_fs(const struct ag_policy *pol);
 
+/* First ABI with IPC scoping (LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET and
+ * LANDLOCK_SCOPE_SIGNAL). */
+#define LL_SCOPE_ABI 6
+
+/* Child side: enforce a scope-only ruleset. Afterwards the calling process and
+ * its descendants cannot signal (kill, tgkill, sigqueue, pidfd_send_signal,
+ * SIGIO) or connect to an abstract AF_UNIX socket of any process outside this
+ * Landlock domain; processes inside it are unaffected. Pathname AF_UNIX sockets
+ * are NOT covered. Must be called after PR_SET_NO_NEW_PRIVS. 0 or -1 (errno). */
+int ll_restrict_scope(void);
+
 #endif

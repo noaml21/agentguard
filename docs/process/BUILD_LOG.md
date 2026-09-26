@@ -277,3 +277,31 @@ outside python listener on abstract socket `\0agp9probe`, both killed afterwards
    `connect("/run/user/1000/bus")` succeeded.
 
 Classification recorded in THREAT_MODEL (VERIFIED GAPs). Next steps in BUILD_STATE.
+
+## 2026-09-26 — Session 3: Phase 9 slice 1 (Landlock scope + prlimit64)
+
+Scope for this session was deliberately narrow (defensive only): no reproduction of the
+session-D-Bus escape and no interaction with real user services; every outside party is a
+fixture the suite creates (a `sleep 300` sentinel, a python listener on a random abstract
+name). The D-Bus escape stays OPEN.
+
+Measured first (strace, dev host): glibc `ulimit`/`setrlimit`/`getrlimit` and python
+`resource.setrlimit` call `prlimit64(0, …)`; node `child_process` and gcc/git/python asyncio
+create AF_UNIX sockets only via `socketpair(AF_UNIX, SOCK_STREAM)`; `claude --version`
+creates no sockets; `/proc/sys/dev/tty/legacy_tiocsti` = 0; the installed
+`linux/landlock.h` has no `scoped` member.
+
+Changes: new required layer `landlock_scope` (index after `landlock_fs`, probe ABI >= 6)
+applying a second, scope-only Landlock domain (`ABSTRACT_UNIX_SOCKET | SIGNAL`, attr struct
+defined locally); seccomp block allowing `prlimit64` only with pid 0; new suite
+`sandbox/tests/hostipc_test.sh` wired into `check` and `check-asan`.
+
+TDD evidence: first run with only the scope layer = 24 pass / 3 fail — the three outside
+prlimit cases changed the sentinel's `RLIMIT_NOFILE` to 77, 66 and 55 (read outside from
+`/proc/<pid>/limits`). After the seccomp rule: 27/27, sentinel unchanged; util-linux
+`prlimit --nofile=200:200 sh -c 'ulimit -n'` inside prints 200 (uses pid 0).
+
+Verified: `tests/hostipc_test.sh` 27/27 (0 skipped); `make -C sandbox check` =
+18+12+14+17+21+14+66+27+5 = **194**; `check-asan` = **194**, no ASan/UBSan/LSan reports.
+V1 `tests/run_tests.sh` 40/40. CI only runs the V1 suite, so it says nothing
+about these changes. TEST_PLAN's CI column corrected accordingly.

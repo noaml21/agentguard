@@ -159,9 +159,10 @@ int sc_apply(int deny_inet)
     }
 
     size_t ndeny = sizeof(kDenied) / sizeof(kDenied[0]);
-    /* header(3)+x32(2)+load nr(1)+2*deny+clone3(2)+clone block(5)+socket block(6)+allow(1) */
+    /* header(3)+x32(2)+load nr(1)+2*deny+clone3(2)+clone block(5)+prlimit block(5)+
+     * socket block(6)+allow(1) */
     struct sock_filter prog[3 + 2 + 1 + 2 * (sizeof(kDenied) / sizeof(kDenied[0])) + 2 + 5 +
-                            6 + 1];
+                            5 + 6 + 1];
     size_t n = 0;
 
     /* Load arch; kill if it isn't what we built for (blocks int-0x80 / wrong ABI). */
@@ -211,6 +212,30 @@ int sc_apply(int deny_inet)
     /* [3] if no NEW bit set, skip the deny (allow via later default). */
     prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
     /* [4] a new-namespace clone: deny. */
+    prog[n++] = (struct sock_filter)BPF_STMT(
+        BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
+#endif
+
+#ifdef SYS_prlimit64
+    /* prlimit64(pid, ...) only for pid 0 (the caller). A nonzero pid names another
+     * process: same-UID callers could otherwise change an outside process's limits
+     * (e.g. lower its RLIMIT_NOFILE, or raise RLIMIT_CORE so it dumps memory).
+     * glibc getrlimit/setrlimit, bash ulimit and python resource.setrlimit all
+     * pass pid 0 (measured with strace, Phase 9). An explicit own pid is also
+     * denied -- seccomp cannot tell whose pid it is. The kernel reads pid as a
+     * 32-bit pid_t, so checking the low word is exact. 5-instruction block. */
+    /* [0] reload nr (the clone block may have left flags in A). */
+    prog[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                             offsetof(struct seccomp_data, nr));
+    /* [1] if nr==prlimit64 fall through, else skip [2..4]. */
+    prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                             (uint32_t)SYS_prlimit64, 0, 3);
+    /* [2] load pid = args[0] low 32 bits. */
+    prog[n++] = (struct sock_filter)BPF_STMT(
+        BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0]));
+    /* [3] pid 0 skips the deny. */
+    prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
+    /* [4] another process: deny. */
     prog[n++] = (struct sock_filter)BPF_STMT(
         BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
 #endif

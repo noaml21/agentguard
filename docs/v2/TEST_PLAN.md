@@ -11,11 +11,15 @@ just exit codes.
 |---|---|---|---|
 | V1 regression | `tests/run_tests.sh` | bash, jq, python3, gcc | yes |
 | V1 red-team corpus | `redteam/run_v1.py` | same | yes |
-| Runner unit/integration | `sandbox/tests/` via `make -C sandbox check` | gcc, python3 | yes |
-| Kernel-feature tests | same, tagged | Landlock ABI ≥ N, seccomp | yes, skip with reason when the runner kernel lacks the feature |
+| Runner unit/integration | `sandbox/tests/` via `make -C sandbox check` | gcc, python3 | **not yet** (Phase 12) |
+| Kernel-feature tests | same, tagged | Landlock ABI ≥ N, seccomp | **not yet** (Phase 12: skip with reason when the runner kernel lacks the feature) |
 | Host-only enhanced | same, tagged | namespaces / delegated cgroup | skip with reason in CI; never reported as verified when skipped |
-| Sanitizers | `make -C sandbox check-asan` | gcc ASan/UBSan | yes |
-| V2 red-team replay | `redteam/run_v2.py` | built runner | yes (feature-gated cases skip with reason) |
+| Sanitizers | `make -C sandbox check-asan` | gcc ASan/UBSan | **not yet** (Phase 12) |
+| V2 red-team replay | `redteam/run_v2.py` | built runner | planned (Phase 11/12) |
+
+**CI today** (`.github/workflows/ci.yml`) runs only `tests/run_tests.sh` (the V1 suite) on
+`ubuntu-latest`. A green CI run is therefore **not** evidence for any V2 sandbox test; V2
+evidence is the recorded local `make -C sandbox check` / `check-asan` runs on the dev host.
 
 ## Required cases by phase
 
@@ -82,6 +86,22 @@ just exit codes.
   sha256, inode, size and directory listing are unchanged, the next run works, and the
   runner copy still executes. A runner copy inside the workspace is refused in policy mode
   and reported in CLI mode. CLI `--timeout nan` is rejected (shared parser).
-- **Phase 9**: signal to an outside same-UID process denied (scope); ptrace denied;
-  abstract unix connect to outside listener denied; pathname unix socket outside
-  workspace (documented per ABI).
+- **Phase 9** (`sandbox/tests/hostipc_test.sh`, 27 cases on the dev host; first slice).
+  Fixtures are created by the suite only: an outside `sleep` sentinel and an outside python
+  listener on a random abstract name that logs every accept. **Scope** (skip with reason
+  when `landlock_scope` is unavailable): `kill -0` and SIGTERM to the sentinel fail and it
+  stays alive; `pidfd_open` works but `pidfd_send_signal` is EPERM; a grandchild is also
+  denied; the target cannot signal its supervisor; signalling its own child works (143).
+  Abstract: outside control connection is logged (the fixture works); the sandbox and a
+  descendant get EPERM and the listener logs 0 hits; listener+client inside one sandbox
+  work. **Compat**: socketpair stream round trip, python asyncio subprocess, python
+  threads+subprocess, gcc, git init/add/commit, node `child_process` execSync+spawnSync.
+  **prlimit64** (seccomp): `prlimit --pid`, python `resource.prlimit(pid)` and a descendant
+  cannot change the sentinel (its `/proc/<pid>/limits` read outside is unchanged); shell
+  `ulimit`, python `setrlimit`/`getrlimit` and `prlimit(0, …)` still work. Discrimination:
+  before the rule the same three cases changed the sentinel to 77/66/55. **Contract**:
+  strict refuses (125, target not run) when the layer is unavailable or fails to apply;
+  degraded status shows `missing`, and a degraded run can reach the sentinel with `kill -0`
+  (the lost guarantee is real and reported). Not yet covered: pathname AF_UNIX / session
+  D-Bus (OPEN), ptrace/process_vm against an outside sentinel, inherited-fd re-check, SysV
+  IPC fixture.

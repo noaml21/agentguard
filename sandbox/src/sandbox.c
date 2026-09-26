@@ -55,6 +55,17 @@ static int apply_landlock_fs(const struct ag_policy *pol)
     return ll_restrict_fs(pol);
 }
 
+static int probe_landlock_scope(void)
+{
+    return ll_abi() >= LL_SCOPE_ABI;
+}
+
+static int apply_landlock_scope(const struct ag_policy *pol)
+{
+    (void)pol;
+    return ll_restrict_scope();
+}
+
 static int probe_seccomp(void)
 {
     return sc_available();
@@ -94,6 +105,12 @@ static const struct layer_def kLayers[AG_LAYER_COUNT] = {
         .name = "landlock_fs",
         .probe = probe_landlock_fs,
         .apply = apply_landlock_fs,
+        .required_by_default = 1,
+    },
+    [AG_LAYER_LANDLOCK_SCOPE] = {
+        .name = "landlock_scope",
+        .probe = probe_landlock_scope,
+        .apply = apply_landlock_scope,
         .required_by_default = 1,
     },
     [AG_LAYER_SECCOMP] = {

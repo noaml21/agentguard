@@ -178,3 +178,38 @@ int ll_restrict_fs(const struct ag_policy *pol)
     close(ruleset_fd);
     return 0;
 }
+
+/* Ruleset attr with the ABI 6 `scoped` member, defined locally because the
+ * installed UAPI header may predate it. Layout and flag values are ABI-stable. */
+struct ll_scoped_attr {
+    uint64_t handled_access_fs;
+    uint64_t handled_access_net;
+    uint64_t scoped;
+};
+#define LL_SCOPE_ABSTRACT_UNIX_SOCKET (1ULL << 0)
+#define LL_SCOPE_SIGNAL (1ULL << 1)
+
+int ll_restrict_scope(void)
+{
+    int abi = ll_abi();
+    if (abi < LL_SCOPE_ABI) {
+        errno = abi < 0 ? errno : EOPNOTSUPP;
+        return -1;
+    }
+    /* A separate scope-only domain stacked on the FS one: no access rights are
+     * handled here, so it restricts nothing but the two IPC scopes. */
+    struct ll_scoped_attr attr = {
+        .scoped = LL_SCOPE_ABSTRACT_UNIX_SOCKET | LL_SCOPE_SIGNAL,
+    };
+    int ruleset_fd = (int)syscall(SYS_landlock_create_ruleset, &attr, sizeof attr, 0);
+    if (ruleset_fd < 0)
+        return -1;
+    if (ll_restrict_self(ruleset_fd, 0) != 0) {
+        int saved = errno;
+        close(ruleset_fd);
+        errno = saved;
+        return -1;
+    }
+    close(ruleset_fd);
+    return 0;
+}
