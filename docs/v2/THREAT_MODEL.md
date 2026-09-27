@@ -54,7 +54,8 @@ Every row below is subject to the **host-IPC residual** in §4.1.
 | Same-UID signals to outside processes (incl. the supervisor) | VERIFIED (Landlock `SCOPE_SIGNAL`, layer `landlock_scope`, ABI ≥ 6; `kill`, SIGTERM, `pidfd_send_signal`, grandchild → EPERM, disposable sentinel alive; Phase 9). `tgkill`/`rt_sigqueueinfo`/SIGIO use the same kernel hook — ASSUMED, not individually tested | layer reported `missing`; VERIFIED that a degraded run can then reach the sentinel | — |
 | Abstract AF_UNIX to outside listeners | VERIFIED (Landlock `SCOPE_ABSTRACT_UNIX_SOCKET`, same layer: target and descendant get EPERM, outside listener logs 0 hits; abstract sockets *inside* the sandbox still work) | layer reported `missing` | — |
 | Resource limits of outside same-UID processes | VERIFIED (seccomp: `prlimit64` only with pid 0; sentinel limits unchanged; self `ulimit`/`setrlimit` work; an explicit own pid is denied too) | only if seccomp applied | — |
-| Same-UID ptrace | VERIFIED seccomp deny (EPERM on `PTRACE_TRACEME`, Phase 5); not yet re-tested against an outside sentinel (Phase 9 remaining). Yama scope 1 is a host setting, not AgentGuard enforcement | — | — |
+| Same-UID ptrace / process_vm / sensitive proc access | VERIFIED against an outside disposable sentinel: seccomp independently denies attach and process_vm read/write; Landlock independently denies those plus `/proc/PID/mem` read/write and reopening `/proc/PID/fd/N`. Positive controls succeed after the sentinel opts itself into tracing. Yama is not credited | without both Landlock domains, proc access succeeds; without seccomp, Landlock still protects the outside sentinel | — |
+| SysV shared memory, semaphore and message-queue access | IMPLEMENTED syscall deny-list; VERIFIED attach/write, semaphore SETVAL and message send denied, fixture state unchanged | VERIFIED effects succeed with seccomp omitted; status reports `sysv_denied:false` | — |
 | **Pathname AF_UNIX to same-UID host services (session D-Bus, `systemd --user`)** | **OPEN — VERIFIED ESCAPE** (§4.1). No Core mechanism applied; no guarantee in this table holds against a target that uses it | same | — |
 
 ### 4.1 Known residuals (current)
@@ -101,3 +102,42 @@ Every row below is subject to the **host-IPC residual** in §4.1.
 - Network-namespace isolation (namespace tier unavailable on the dev host).
 - Guarantees that the active mode reports as unavailable or degraded.
 - Running as root.
+
+## 6. Phase 9 surface inventory and decision (2026-09-27)
+
+Phase 9 remains **OPEN**. Classification below does not waive the real closure gate or
+authorize Phase 10. `strict` means required layers apply; it does **not** mean complete
+same-UID host isolation. Status now explicitly reports `host_ipc.isolation_enforced:false`
+in strict and degraded modes, and the text report says `NOT ISOLATED`.
+
+| Surface | Classification / mechanism | Disposable fixture evidence and limits |
+|---|---|---|
+| Outside signals and abstract Unix sockets | Core: Landlock scope | Existing 27-case suite: outside sentinel survives; outside abstract listener receives no connection; inside IPC works. Other signal entry points remain ASSUMED as specified above |
+| Outside ptrace, process_vm read/write | Core: seccomp and Landlock independently | Extended suite: tracing enabled on the sentinel itself via PR_SET_PTRACER_ANY, no Yama setting changed. Baseline reads/writes succeed; each independent AgentGuard arm denies; sentinel memory unchanged |
+| `/proc/PID/mem`, `/proc/PID/fd/N` | Core: Landlock domain relationship | Baseline and no-Landlock control succeed; Landlock-only and normal arms deny. seccomp alone does not protect these opens |
+| `/proc/PID/status` metadata | Non-goal: process visibility is not PID namespace isolation | Fixture status remains readable. No claim that metadata, process names or PIDs are hidden |
+| prlimit on outside PIDs | Core: seccomp pid=0 only | Existing external limit-value oracle; explicit own PID also denied |
+| Pathname Unix STREAM/DGRAM/SEQPACKET, including socketpair DGRAM sendto | **DEGRADED / OPEN**, all current modes | Fresh outside listeners receive fixture bytes in both net modes. Test-only socket/socketpair filter prevents every tested arrival; it is NOT installed by the runner |
+| Session D-Bus / user systemd authority | **OPEN — historical VERIFIED ESCAPE**, all modes | No interaction in this session. Synthetic pathname traffic is not a D-Bus authority regression and does not close §4.1. Real verification requires separate explicit authorization |
+| Inherited Unix socket and pidfd | Core sanitation for non-kept fds; explicit delegation for stdio/keeps | Non-kept fds return EBADF and peer gets no data. `--keep-fd` socket transmits fixture bytes; kept pidfd cannot signal outside scope. All 64 explicit keeps now survive (off-by-one fixed) |
+| SysV IPC | Core deny via seccomp, DEGRADED without it | Fresh IPC_PRIVATE shm/sem/msg objects only; disabled-seccomp control mutates each, normal target gets EPERM and external bytes/value/queue contents stay unchanged. Creation/control/operation syscalls denied; shmdt remains allowed. SysV applications lose compatibility |
+| POSIX shared memory / mmap | **DEGRADED by filesystem grants**, not a separate IPC namespace | Fresh `/dev/shm` fixture is readable under default `/dev` read grant; writable open denied and bytes unchanged. No confidentiality claim for allowed read roots. Explicit write grants delegate shared-state authority |
+| User-to-user AF_NETLINK | **DEGRADED / OPEN**, allowed family in net none | NETLINK_USERSOCK message arrives at a freshly bound outside fixture port in both baseline and sandbox. No kernel-control endpoint is contacted. “Local” does not mean isolated; kernel permissions on privileged netlink operations are host policy |
+| TTY / `/dev/pts`, device ioctls | **DEGRADED**, compatibility grants; no tty isolation claim | Reopening a new fixture pty slave and writing reaches its master. TIOCSTI on that fixture returns EIO in both baseline and sandbox on this host: host/kernel policy, NOT AgentGuard enforcement. IOCTL_DEV remains unhandled |
+| Writable files/FIFOs/shared scratch | Intentional policy delegation, not an IPC boundary | Phase 4 read/write matrix applies; default `/tmp` is shared writable authority, not private scratch. Existing file/pipe runner tests plus explicit keep tests cover inherited authority |
+
+The blanket AF_UNIX-denial candidate preserves socketpair streams, asyncio, pipe-based
+multiprocessing, gcc, git, Node child_process and `claude --version` in fixtures. Localhost
+NSS lookup completes and the syslog API returns when AF_UNIX creation is denied (no real
+nscd/syslog service is contacted; this is fallback behavior, not successful logging).
+But `multiprocessing.Manager` fails with PermissionError, whereas it works with the normal
+runner. Decision: do not impose blanket denial on ordinary developer runs; use the
+canonical report-the-missing-guarantee fallback. There is no released Unix-denial mode or
+claim that the test-only candidate is a complete security boundary. In particular it does
+not revoke kept sockets, fix netlink, or verify the real D-Bus path.
+
+The [kernel's Landlock ptrace documentation](https://docs.kernel.org/7.0/userspace-api/landlock.html#ptrace-restrictions)
+describes the domain relationship underlying the memory tests. Evidence here is the
+fixture effects, not an assumption that host Yama/AppArmor policy provides our boundary.
+Scheduling controls, POSIX message queues and other untested same-UID APIs are not covered
+by these results; no exhaustive host-isolation guarantee is made.

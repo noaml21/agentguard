@@ -24,8 +24,9 @@ Linux rules:
   refers to the object we validated, not a name that could later point elsewhere.
 - **seccomp last**: the filter blocks syscalls. Installing it last means it never has to
   allow the syscalls we use during setup.
-- **Mark fds close-on-exec rather than close them**: setup still needs a few descriptors,
-  and `execve` closes all CLOEXEC descriptors atomically at the moment the target starts.
+- **Close non-kept fds before setup**: after the cgroup join, inherited descriptors
+  are closed. Only stdio, explicit keeps and the report pipe survive sanitation.
+  The report pipe is CLOEXEC, so `execve` closes it atomically when the target starts.
 
 Rejected alternative: have the *parent* restrict itself and then fork. That would restrict
 the supervisor, which must stay unrestricted to kill and reap the tree and read its own
@@ -191,3 +192,38 @@ What `--net none` does *not* do: it does not stop the sandboxed tree from talkin
 same-UID services over Unix sockets. The Phase 6 probe showed the worst case — asking the
 user systemd manager over D-Bus to start a process, which then runs with no AgentGuard
 restrictions at all. That is recorded as a verified residual and belongs to Phase 9.
+
+## Host IPC: what Phase 9 currently protects
+
+Landlock's signal scope stops the target from signalling processes outside its domain,
+including its supervisor. Its abstract-socket scope similarly protects outside abstract
+Unix listeners. Children inside the domain can still signal and talk to one another.
+seccomp also restricts `prlimit64` to pid zero, so a target can change its own limits but
+cannot change an outside process's limits.
+
+Memory access has two checks: seccomp rejects ptrace and process_vm syscalls, while
+Landlock also checks the relationship between the caller's domain and the target's.
+That Landlock check covers sensitive `/proc/PID/mem` and `/proc/PID/fd` access too.
+Tests deliberately make a disposable sentinel traceable, prove that a baseline can
+read/write it, then show that each relevant AgentGuard mechanism prevents the effect.
+They do not mistake the host's Yama restrictions for AgentGuard protection.
+
+SysV shared memory, semaphores and queues need their own rule: their numeric IDs are
+not filesystem paths. The runner now denies their creation and access/control syscalls.
+Tests allocate new objects, demonstrate outside-state changes without seccomp, then
+check that protected runs leave the objects unchanged. Every object is removed by its
+fixture owner. Applications requiring SysV IPC cannot use this seccomp policy.
+
+The remaining boundary is still incomplete. Pathname Unix sockets can reach host
+services, and datagram socketpairs can also send to a pathname socket. A test filter
+blocks both, but breaks Python multiprocessing.Manager. It is not enabled in normal
+runs. Instead status explicitly says **host IPC is not isolated**, even in strict mode.
+Strict means required mechanisms apply; it is not a promise that every host interaction
+is mediated. The real session-D-Bus escape is still OPEN and was not retested.
+
+Likewise, a kept socket is deliberately delegated authority: its peer receives data
+even though a non-kept socket would be closed. Default `/dev/shm` reads, `/dev/pts`
+writes and AF_NETLINK are additional shared host surfaces demonstrated with fresh
+fixtures. The host rejects the tested terminal-input ioctl even outside AgentGuard,
+so we credit that to host policy. These limitations are listed in THREAT_MODEL §6;
+they are not grounds to declare Phase 9 complete or start Phase 10.

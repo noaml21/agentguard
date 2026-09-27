@@ -74,7 +74,8 @@ int fdsan_apply(const struct fdsan_policy *policy)
      * fds we keep out of harm's way is unnecessary because we just skip them via
      * a per-fd approach below. We instead close ranges between kept fds. */
     /* Build a sorted set: 0,1,2, report_fd, and user keeps. */
-    int kept[3 + 64];
+    /* stdio + report pipe + every user-kept descriptor. */
+    int kept[4 + 64];
     size_t nk = 0;
     kept[nk++] = 0;
     kept[nk++] = 1;

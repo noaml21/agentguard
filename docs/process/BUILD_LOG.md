@@ -305,3 +305,53 @@ Verified: `tests/hostipc_test.sh` 27/27 (0 skipped); `make -C sandbox check` =
 18+12+14+17+21+14+66+27+5 = **194**; `check-asan` = **194**, no ASan/UBSan/LSan reports.
 V1 `tests/run_tests.sh` 40/40. CI only runs the V1 suite, so it says nothing
 about these changes. TEST_PLAN's CI column corrected accordingly.
+
+## 2026-09-27 — Phase 9 slice 2: disposable IPC evidence, SysV denial, FD capacity
+
+Reconciled first: local branch `v2/kernel-sandbox`, clean worktree, HEAD and remote HEAD
+both `244e472b3c8e47d9e7f86351b78d1a030cd95230`. No history rewrite or merge. Tool sandbox
+startup failed before execution (`bwrap` loopback permission); repository commands ran
+through reviewed escalation as the ordinary user. No hooks or host settings changed.
+Capability audit reconfirms kernel 7.0.0-31, Landlock ABI 8, Yama 1, available owned-cgroup
+kill tier, unavailable usable namespace tier.
+
+Reproduced before fixing: extended suite had four failures — 64 kept fds refused setup
+(EBADF), and the sandbox changed each owned SysV shm/sem/msg fixture. Added seccomp
+SysV creation/access/control denials; fixed the keep-array capacity to include the report
+pipe in addition to stdio and all 64 user keeps. Afterward the fixture states remain
+unchanged; disabling seccomp reproduces their effects. No real SysV ID is inspected.
+
+Outside sentinel explicitly opts into tracing; baseline memory operations succeed,
+seccomp independently blocks ptrace/process_vm, and Landlock independently blocks those
+plus proc-mem/proc-fd access. This discriminates AgentGuard from host Yama enforcement.
+Non-kept Unix/pidfd authority is closed; explicit kept socket traffic succeeds, while
+Landlock still denies signalling through a kept pidfd.
+
+Evaluated a test-only AF_UNIX socket + datagram socketpair deny filter. It blocks owned
+pathname STREAM/DGRAM/SEQPACKET/socketpair-DGRAM traffic in both net modes, but breaks
+multiprocessing.Manager. Preserve compatibility using the canonical explicit-reporting
+fallback: runtime does not install the candidate, and status/help explicitly disclaim
+host IPC isolation even in strict mode. Pre-run status no longer credits unavailable
+requested seccomp as network/SysV enforcement. Candidate compatibility: gcc/git/Node,
+claude version, asyncio/socketpair/pipe multiprocessing, localhost NSS and syslog fallback
+pass with fresh HOME/minimal environment; no real service contacted.
+
+Additional fixture limits recorded: default `/dev/shm` object readable (not writable),
+new `/dev/pts` slave writable, NETLINK_USERSOCK reaches outside fixture. TIOCSTI is EIO
+both outside/inside (host policy). The first TTY test incorrectly called setsid from a
+process-group leader; corrected it to fork first, then measured the ioctl. No real tty
+is touched. Threat-model inventory, architecture, walkthrough, test plan and build state
+updated. **Real session-D-Bus finding stays OPEN; no reproduction attempted. Phase 9
+closure not claimed; Phase 10 not started.** Scheduling/POSIX queue inventory still pending.
+
+Validation (dev host, no skips):
+- `make -C sandbox all`: warning-clean production build.
+- `python3 sandbox/tests/hostipc_extended_test.py`: 13/13 test methods, with mode/operation
+  subtests (not inflated into the top-level count).
+- `bash sandbox/tests/hostipc_test.sh`: 27/27.
+- `make -C sandbox check`: **207/207**, including all six host-only cgroup cases.
+- `make -C sandbox check-asan`: **207/207**, no ASan/UBSan/LSan reports. Make target now
+  builds in `build/asan` and invokes the same suite list, without deleting normal output.
+- `bash tests/run_tests.sh`: **40/40**.
+- `bash scripts/capability_audit.sh`; `git diff --check`: passed.
+Local full output: ignored `build/phase9-{check,asan,v1,capabilities}.log`.

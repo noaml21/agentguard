@@ -16,7 +16,7 @@ agentguard-run [options] -- <command> [args...]
    |   - reads setup report pipe; forwards signals; enforces deadline; reaps tree
    |
    +-- child (setup, then exec)
-         pgrp/TTY handoff -> rlimits -> open rule path fds -> mark fds CLOEXEC
+         cgroup join -> pgrp/TTY handoff -> close non-kept fds -> rlimits
          -> no_new_privs -> Landlock restrict_self -> seccomp filter -> execvp
          (any required step fails => write failure record, _exit; target never runs)
 ```
@@ -71,16 +71,15 @@ The runner re-probes at every start; nothing above is hardcoded.
    `cgroup_kill` layer later reports the outcome.
 1. **Process group / TTY handoff** — `setpgid(0,0)`; parent makes the group foreground
    with `tcsetpgrp` when stdin is a TTY. Needs no restricted syscalls.
-2. **rlimits** — plain `setrlimit` (implemented just after FD sanitation), before
-   Landlock/seccomp; a failure refuses the run.
-3. **Open Landlock rule paths as `O_PATH` fds** — the kernel resolves each path to an
-   inode now; rules bind to that object, not to a string re-resolved later. Opened
-   before restrict_self so rule construction cannot be affected by the new domain.
-4. **FD sanitation** — `close_range(3, ~0, CLOSE_RANGE_CLOEXEC)` (fallback: iterate
-   `/proc/self/fd`), except the report pipe which is already CLOEXEC. Marking CLOEXEC
-   (instead of closing) keeps setup fds usable until the atomic close at `execve`.
-5. **`PR_SET_NO_NEW_PRIVS`** — must precede `landlock_restrict_self` and seccomp
+2. **FD sanitation** — `close_range(..., 0)` over gaps between stdio, the report
+   pipe and explicit keeps (fallback: iterate `/proc/self/fd`). Non-kept fds are
+   closed now; only the report pipe closes atomically at exec through CLOEXEC.
+3. **rlimits** — plain `setrlimit`, before Landlock/seccomp; failure refuses the run.
+4. **`PR_SET_NO_NEW_PRIVS`** — must precede `landlock_restrict_self` and seccomp
    filter installation for an unprivileged process (kernel returns EPERM otherwise).
+5. **Open Landlock rule paths as `O_PATH` fds** during ruleset construction — the
+   kernel resolves each path to an inode; rules bind to that object. Opened before
+   restrict_self and closed after each rule is added.
 6. **Landlock** — create ruleset for the handled access rights the running ABI supports,
    add rules, `landlock_restrict_self`. Then a second, scope-only ruleset
    (`scoped = ABSTRACT_UNIX_SOCKET | SIGNAL`, no handled access rights; the attr struct is
@@ -262,3 +261,36 @@ target can query/set only its own limits (glibc `getrlimit`/`setrlimit`, bash `u
 New deny-list entries: `fsopen`, `fsconfig`, `fsmount` (new mount API), `pidfd_getfd`
 (steal an fd from another same-UID process), `syslog` (kernel log), `io_uring_setup/enter/
 register` (io_uring operations bypass per-syscall filtering).
+
+## Phase 9 continuation: SysV IPC and honest host-IPC status
+
+SysV object IDs live in the host IPC namespace, independently of filesystem grants.
+The seccomp deny-list now rejects `shmget/shmat/shmctl`,
+`semget/semop/semtimedop/semctl`, and `msgget/msgsnd/msgrcv/msgctl` with EPERM.
+`shmdt` remains allowed because it only releases a mapping. These rules apply in both
+network modes; explicit degraded mode without seccomp loses them. This deliberately
+excludes SysV-dependent applications, while ordinary pipes/socketpairs and the existing
+developer workflows continue to work.
+
+A **test-only** filter evaluates denying `socket(AF_UNIX)` plus datagram `socketpair`
+(including type flags). Datagram socketpairs can send to a pathname socket, so merely
+denying `socket(AF_UNIX)` is insufficient. The candidate blocks fixture STREAM, DGRAM,
+SEQPACKET and socketpair-DGRAM traffic. It also breaks Python multiprocessing.Manager;
+therefore it is not installed or exposed as a runtime mode. This is the canonical
+compatibility-preserving fallback: explicitly report the missing guarantee. Host-IPC
+isolation is false in status, including strict mode; help explains strict's limited
+meaning. No default scope or Phase 9 closure requirement has been removed.
+
+JSON adds `host_ipc` with `isolation_enforced:false`,
+`pathname_unix:"unrestricted"`, `sysv_denied` derived from effective seccomp state, and
+`inherited_fds:"stdio-and-explicit-keeps"`. Pre-run network/SysV status requires both
+availability and request; strict status with an unavailable seccomp no longer claims
+enforcement just because the layer was requested. Post-run uses the reported applied mask.
+
+FD sanitation closes non-kept descriptors before setup (report pipe stays CLOEXEC).
+Its sorted array now holds stdio **plus the report pipe plus all 64 user keeps**.
+The prior array held only 63 user keeps, closing the last one and refusing setup.
+The memory/process, inherited-fd, SysV, socket and compatibility evidence is in
+`sandbox/tests/hostipc_extended_test.py`; surface classifications and remaining gaps are
+in THREAT_MODEL §6. In particular AF_NETLINK, default `/dev` reads and `/dev/pts` writes
+are not complete host-IPC isolation. The real session-D-Bus finding remains OPEN.

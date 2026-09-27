@@ -102,6 +102,30 @@ evidence is the recorded local `make -C sandbox check` / `check-asan` runs on th
   before the rule the same three cases changed the sentinel to 77/66/55. **Contract**:
   strict refuses (125, target not run) when the layer is unavailable or fails to apply;
   degraded status shows `missing`, and a degraded run can reach the sentinel with `kill -0`
-  (the lost guarantee is real and reported). Not yet covered: pathname AF_UNIX / session
-  D-Bus (OPEN), ptrace/process_vm against an outside sentinel, inherited-fd re-check, SysV
-  IPC fixture.
+  (the lost guarantee is real and reported).
+- **Phase 9 extended** (`sandbox/tests/hostipc_extended_test.py`, 13 test methods,
+  with operation/mode subtests; do not count subtests as additional top-level tests):
+  outside sentinel memory read/write/attach and proc-fd reopen, independently testing
+  Landlock and seccomp; inherited Unix/pidfd closure versus explicit delegation; the full
+  64-fd boundary; outside pathname STREAM/DGRAM/SEQPACKET and socketpair-DGRAM traffic
+  under both network modes versus a test-only denial candidate; owned IPC_PRIVATE
+  shm/sem/msg effects with seccomp enabled/disabled; honest status in strict/degraded
+  and unavailable-seccomp cases. Baseline sentinel explicitly permits tracing, so
+  denials are not attributed to Yama. Effects are bytes, semaphore values, queue contents,
+  socket arrivals and unchanged outside memory, not just syscall return values.
+  Compatibility: candidate filter preserves gcc/git/Node, `claude --version`, asyncio,
+  socketpair streams and pipe-based multiprocessing, but breaks multiprocessing.Manager
+  (normal runner succeeds). NSS localhost lookup and best-effort syslog return under the
+  candidate; socket creation denial prevents reaching real nscd/syslog services. No live
+  Claude/API session is tested. Missing Claude skips explicitly.
+  Further fixture classifications: `/dev/shm` object readable but not writable by default;
+  new pty slave writable through default `/dev/pts`; TIOCSTI baseline/sandbox both EIO on
+  dev host (host policy); NETLINK_USERSOCK reaches a fresh outside fixture port.
+  Required kernel layers absent: extended suite skips with an explicit reason rather than
+  presenting its fixtures as verified. All fixture commands use a fresh HOME, minimal
+  environment and bounded execution; no real session bus or existing SysV ID is touched.
+  **Still OPEN:** real session-D-Bus authority regression requires separate explicit
+  authorization. The synthetic socket tests are not a substitute and do not close it.
+
+`check-asan` now recursively invokes the same `check` suite list with binaries under
+`sandbox/build/asan`; it no longer deletes or replaces the normal build directory.

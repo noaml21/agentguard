@@ -256,8 +256,10 @@ void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
                      int as_json)
 {
     FILE *out = (fd == 2) ? stderr : stdout;
-    /* Pre-run (applied==0) report what will be enforced; post-run what was. */
-    int net_ok = ag_net_enforced(neg, applied ? applied : neg->requested_mask);
+    /* Pre-run report only layers both requested and available. In particular,
+     * an unavailable strict requirement must not be reported as enforced. */
+    uint32_t effective = applied ? applied : neg->requested_mask & neg->available_mask;
+    int net_ok = ag_net_enforced(neg, effective);
     const char *net_name = neg->net_mode == AG_NET_NONE ? "none" : "all";
     if (as_json) {
         fprintf(out, "{\"mode\":\"%s\",\"layers\":[",
@@ -275,6 +277,13 @@ void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
         }
         fprintf(out, "],\"network\":{\"mode\":\"%s\",\"enforced\":%s}", net_name,
                 net_ok ? "true" : "false");
+        /* Strict means the required layers apply, not complete host isolation.
+         * Pathname sockets remain an authority path in every current mode. */
+        fprintf(out, ",\"host_ipc\":{\"isolation_enforced\":false,"
+                     "\"pathname_unix\":\"unrestricted\",\"sysv_denied\":%s,"
+                     "\"inherited_fds\":\"stdio-and-explicit-keeps\"}",
+                (effective & AG_LAYER_BIT(AG_LAYER_SECCOMP))
+                    ? "true" : "false");
         /* Resource limits: rlimits are per-process (not aggregate); the only
          * aggregate mechanism is the cgroup_kill layer above (kill, no limits). */
         fprintf(out, ",\"resources\":{\"timeout_ms\":%ld,\"rlimit_core\":0,"
@@ -312,6 +321,13 @@ void ag_print_status(int fd, const struct ag_negotiation *neg, uint32_t applied,
     fprintf(out, "  %-16s policy-file=%s runner-in-writable-root=%s\n", "control",
             neg->policy_used ? "yes" : "no",
             neg->runner_writable == 0 ? "no" : neg->runner_writable > 0 ? "YES" : "unknown");
+    fprintf(out, "  %-16s %s\n", "host IPC",
+            "NOT ISOLATED: pathname Unix sockets can reach unconfined host services");
+    fprintf(out, "  %-16s %s\n", "SysV IPC",
+            (effective & AG_LAYER_BIT(AG_LAYER_SECCOMP)) ? "denied via seccomp"
+                : "NOT DENIED (seccomp missing)");
+    fprintf(out, "  %-16s %s\n", "inherited fds",
+            "stdio and --keep-fd delegate authority; not revoked by filesystem rules");
     if (neg->missing_mask) {
         fprintf(out, "  WARNING: missing required layers -> guarantees reduced\n");
     }

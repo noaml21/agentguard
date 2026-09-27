@@ -31,20 +31,11 @@ $(BUILDDIR)/%.o: src/%.c | $(BUILDDIR)
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
 
-# ASan/UBSan build in a separate directory, then run the integration tests.
+# ASan/UBSan build in a separate directory: never clean the normal build or
+# caller-owned build output, and use the same suite list as the normal gate.
 check-asan:
-	$(MAKE) clean
-	$(MAKE) all CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
-	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/run_tests.sh
-	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/contract_test.sh
-	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/landlock_test.sh
-	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/seccomp_test.sh
-	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/network_test.sh
-	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/resource_test.sh
-	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/policy_test.sh
-	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 bash tests/hostipc_test.sh
-	AGENTGUARD_RUN=$(abspath $(BIN)) ASAN_OPTIONS=detect_leaks=1 python3 tests/tty_test.py
-	$(MAKE) clean
+	ASAN_OPTIONS=detect_leaks=1 $(MAKE) check BUILDDIR=build/asan \
+	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
 
 check: all
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/run_tests.sh
@@ -55,6 +46,7 @@ check: all
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/resource_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/policy_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/hostipc_test.sh
+	AGENTGUARD_RUN=$(abspath $(BIN)) python3 tests/hostipc_extended_test.py
 	AGENTGUARD_RUN=$(abspath $(BIN)) python3 tests/tty_test.py
 
 clean:

@@ -29,6 +29,45 @@
  * need it / expected compatibility impact. All return EPERM (a clean error the
  * program can handle) rather than killing the process. */
 static const int kDenied[] = {
+    /* SysV IDs are global within the host IPC namespace: Landlock filesystem
+     * rules and signal/socket scopes do not mediate them. Deny creation as well
+     * as access/control, so targets cannot mutate outside same-UID objects or
+     * leave persistent objects behind. Compatibility: SysV IPC users cannot run;
+     * ordinary pipes, POSIX shared memory/semaphores and socketpairs are unchanged.
+     * shmdt is harmless (release only) and remains allowed. */
+#ifdef SYS_shmget
+    SYS_shmget,
+#endif
+#ifdef SYS_shmat
+    SYS_shmat,
+#endif
+#ifdef SYS_shmctl
+    SYS_shmctl,
+#endif
+#ifdef SYS_semget
+    SYS_semget,
+#endif
+#ifdef SYS_semop
+    SYS_semop,
+#endif
+#ifdef SYS_semtimedop
+    SYS_semtimedop,
+#endif
+#ifdef SYS_semctl
+    SYS_semctl,
+#endif
+#ifdef SYS_msgget
+    SYS_msgget,
+#endif
+#ifdef SYS_msgsnd
+    SYS_msgsnd,
+#endif
+#ifdef SYS_msgrcv
+    SYS_msgrcv,
+#endif
+#ifdef SYS_msgctl
+    SYS_msgctl,
+#endif
 #ifdef SYS_ptrace
     SYS_ptrace,            /* attach/inspect other same-UID processes; agents don't debug live procs; low impact */
 #endif
