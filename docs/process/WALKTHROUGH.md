@@ -227,3 +227,12 @@ writes and AF_NETLINK are additional shared host surfaces demonstrated with fres
 fixtures. The host rejects the tested terminal-input ioctl even outside AgentGuard,
 so we credit that to host policy. These limitations are listed in THREAT_MODEL §6;
 they are not grounds to declare Phase 9 complete or start Phase 10.
+
+Scheduling was another independent path: a process can lower a same-UID neighbor's nice
+value or pin it to one CPU without ptrace or signals. The runner now restricts scheduling
+setters to pid zero (the caller), and rejects group/user-wide priority selectors.
+Disposable sentinel values demonstrate both the old effect and its prevention; ordinary
+nice/taskset/chrt/ionice command launches remain usable. Programs that adjust another
+thread by explicit TID are also denied, a limitation of this simple syscall filter.
+Separately, a fresh POSIX message-queue fixture confirms that the current Landlock policy
+denies opening it for send or receive. The outside queue still holds its original message.

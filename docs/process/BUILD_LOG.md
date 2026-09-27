@@ -355,3 +355,51 @@ Validation (dev host, no skips):
 - `bash tests/run_tests.sh`: **40/40**.
 - `bash scripts/capability_audit.sh`; `git diff --check`: passed.
 Local full output: ignored `build/phase9-{check,asan,v1,capabilities}.log`.
+
+## 2026-09-27 — Phase 9 slice 3: outside scheduling and POSIX queue inventory
+
+Continued after committing/pushing slice 2 (`b305ee5`). Disposable scheduling probes
+reproduced six failing cases: setpriority, sched_setaffinity, sched_setscheduler,
+sched_setparam, sched_setattr, ioprio_set all succeeded against an outside sentinel.
+Externally observed effects: nice 0→19, affinity 12 CPUs→1, policy OTHER→BATCH, I/O
+priority 0→IDLE. sched_setparam priority 0 is a no-op (return-code evidence only).
+Each sentinel owns a fresh session/process group; group-selector tests never select the
+real user's process group or UID. No real user processes or persistent objects touched.
+
+Root-cause fix: shared seccomp pid-zero blocks for prlimit64 and the four scheduler
+setters; selector+who-zero blocks for setpriority/ioprio_set. Nonzero PIDs/TIDs and
+group/UID selectors rejected, including inside peers. This compatibility limitation is
+explicit; nice/taskset/chrt/ionice launches and self APIs pass. Disabled-seccomp controls
+still mutate fixture state; protected controls leave all outside values unchanged.
+
+POSIX named queue: exclusive fresh name, baseline send/receive succeed, current Landlock
+configuration denies opens for both with EACCES and preserves outside queue contents.
+Seccomp omission retains denial; omitting both Landlock domains permits effects. No new
+queue rule was needed. Do not generalize the observed open protection to all operations,
+policies or ABIs. Queue closed/unlinked by fixture owner.
+
+Review also made UBSan diagnostics fatal (`halt_on_error=1:print_stacktrace=1`), including
+the extended suite's isolated environment. Otherwise a captured recoverable diagnostic
+could exit zero. Corrected old threat-table degraded-mode wording: nnp and filesystem
+integrity depend on the respective applied layers; deadline teardown does not guarantee
+killing setsid escapees without the cgroup tier.
+
+Validation, dev host (all passed, zero skips):
+- `make -C sandbox all` (warning-clean).
+- `python3 sandbox/tests/hostipc_extended_test.py`: **16/16**, including grouped
+  baseline, degraded, protected and self-directed scheduling/IPC operations.
+- `bash sandbox/tests/seccomp_test.sh`: **17/17**.
+- `bash sandbox/tests/hostipc_test.sh`: **27/27**.
+- `make -C sandbox check`: **210/210**, all six host-only cgroup cases ran.
+- `make -C sandbox check-asan`: **210/210**; repeated with fatal UBSan, **210/210**,
+  no ASan/UBSan/LSan reports.
+- `bash tests/run_tests.sh`: **40/40**; `git diff --check`: passed.
+Full local logs: ignored `build/phase9-final-{check,asan,asan-fatal,v1}.log`.
+
+Updated BUILD_STATE, this log, THREAT_MODEL, ARCHITECTURE, TEST_PLAN and WALKTHROUGH.
+Phase 9 remains **IN PROGRESS**: the recorded real session-bus authority regression is
+not authorized and has not run. Its finding remains OPEN; pathname sockets, netlink,
+shared default grants and explicit inherited authority remain classified limitations.
+No scope removed, no Phase 10 work, no strict host-isolation guarantee. Exact next action:
+resume from BUILD_STATE and the inventory; separately authorize the real authority-path
+verification before attempting it, and satisfy the unchanged gate before advancing.

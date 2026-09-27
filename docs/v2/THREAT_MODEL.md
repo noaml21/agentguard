@@ -39,18 +39,18 @@ Every row below is subject to the **host-IPC residual** in §4.1.
 | Property | strict (unprivileged baseline) | degraded (explicit) | enhanced (namespaces) |
 |---|---|---|---|
 | Target never runs before enforcement | VERIFIED (Phase 3 contract tests) | missing layers listed; apply failures still refuse | — |
-| No privilege gain via setuid | VERIFIED (no_new_privs applied) | same | — |
+| No privilege gain via setuid | VERIFIED (no_new_privs applied) | only if no_new_privs applied | — |
 | Filesystem reads/writes outside the policy denied | VERIFIED (Landlock, Phase 4 matrix) | only if Landlock applied | UNAVAILABLE on dev host |
 | ptrace / process_vm_* / namespace creation+join / mount (incl. new mount API) / module / kexec / bpf / perf / io_uring denied | VERIFIED (seccomp, Phases 5–6) | only if seccomp applied | — |
 | `--net none`: no IP (v4/v6 TCP, UDP, raw) or other non-local socket can be created | VERIFIED (socket-family allowlist; effect tests with loopback listeners) | NOT enforced if seccomp missing — reported in status + warning | UNAVAILABLE on dev host |
 | `--net all`: host networking; no destination filtering | by design | same | — |
 | Core dumps disabled; optional per-process file-size / open-file bounds | VERIFIED (rlimits, Phase 7; per process, not aggregate) | same | — |
-| Wall-clock deadline kills the tree | VERIFIED (Phase 2 + Phase 7 escapee case) | same | — |
+| Wall-clock deadline starts tree teardown | VERIFIED (Phase 2 + Phase 7 escapee case); killing setsid escapees depends on cgroup_kill below | same dependency | — |
 | setsid/setpgid escapers killed at teardown | VERIFIED on dev host when `cgroup_kill` applied (host-only; opportunistic) | pgid-only teardown when unavailable — escapers survive (VERIFIED) | — |
 | Aggregate process-count / memory limits | UNAVAILABLE in Core (needs controllers in a cgroup AgentGuard does not own) | — | — |
 | Malformed policy never runs the target | VERIFIED (Phase 8, 37 malformed-input cases) | same | — |
-| Target cannot alter the policy used by the next run | VERIFIED in policy mode (location check + Landlock; 17 attack spellings leave bytes/inode/listing unchanged) | same | — |
-| Target cannot replace the runner binary for the next run | VERIFIED in policy mode (refused if inside a writable root); CLI mode: DEGRADED — only reported in status | same | — |
+| Target cannot alter the policy used by the next run | VERIFIED in policy mode (location check + Landlock; 17 attack spellings leave bytes/inode/listing unchanged) | requires Landlock FS applied | — |
+| Target cannot replace the runner binary for the next run | VERIFIED in policy mode (refused if inside a writable root); CLI mode: DEGRADED — only reported in status | requires Landlock FS applied; same CLI limitation | — |
 | Same-UID signals to outside processes (incl. the supervisor) | VERIFIED (Landlock `SCOPE_SIGNAL`, layer `landlock_scope`, ABI ≥ 6; `kill`, SIGTERM, `pidfd_send_signal`, grandchild → EPERM, disposable sentinel alive; Phase 9). `tgkill`/`rt_sigqueueinfo`/SIGIO use the same kernel hook — ASSUMED, not individually tested | layer reported `missing`; VERIFIED that a degraded run can then reach the sentinel | — |
 | Abstract AF_UNIX to outside listeners | VERIFIED (Landlock `SCOPE_ABSTRACT_UNIX_SOCKET`, same layer: target and descendant get EPERM, outside listener logs 0 hits; abstract sockets *inside* the sandbox still work) | layer reported `missing` | — |
 | Resource limits of outside same-UID processes | VERIFIED (seccomp: `prlimit64` only with pid 0; sentinel limits unchanged; self `ulimit`/`setrlimit` work; an explicit own pid is denied too) | only if seccomp applied | — |
@@ -117,11 +117,13 @@ in strict and degraded modes, and the text report says `NOT ISOLATED`.
 | `/proc/PID/mem`, `/proc/PID/fd/N` | Core: Landlock domain relationship | Baseline and no-Landlock control succeed; Landlock-only and normal arms deny. seccomp alone does not protect these opens |
 | `/proc/PID/status` metadata | Non-goal: process visibility is not PID namespace isolation | Fixture status remains readable. No claim that metadata, process names or PIDs are hidden |
 | prlimit on outside PIDs | Core: seccomp pid=0 only | Existing external limit-value oracle; explicit own PID also denied |
+| Outside scheduling / nice / I/O priority | Core: seccomp self-only setters | Slice 3: unconfined and disabled-seccomp arms change a private sentinel's nice, affinity, BATCH policy and I/O priority; protected arm leaves all values unchanged. Group selectors target only a sentinel's private process group. sched_setparam is denied too, but unprivileged priority 0 is a no-op, so that case is return-code evidence only |
 | Pathname Unix STREAM/DGRAM/SEQPACKET, including socketpair DGRAM sendto | **DEGRADED / OPEN**, all current modes | Fresh outside listeners receive fixture bytes in both net modes. Test-only socket/socketpair filter prevents every tested arrival; it is NOT installed by the runner |
 | Session D-Bus / user systemd authority | **OPEN — historical VERIFIED ESCAPE**, all modes | No interaction in this session. Synthetic pathname traffic is not a D-Bus authority regression and does not close §4.1. Real verification requires separate explicit authorization |
 | Inherited Unix socket and pidfd | Core sanitation for non-kept fds; explicit delegation for stdio/keeps | Non-kept fds return EBADF and peer gets no data. `--keep-fd` socket transmits fixture bytes; kept pidfd cannot signal outside scope. All 64 explicit keeps now survive (off-by-one fixed) |
 | SysV IPC | Core deny via seccomp, DEGRADED without it | Fresh IPC_PRIVATE shm/sem/msg objects only; disabled-seccomp control mutates each, normal target gets EPERM and external bytes/value/queue contents stay unchanged. Creation/control/operation syscalls denied; shmdt remains allowed. SysV applications lose compatibility |
 | POSIX shared memory / mmap | **DEGRADED by filesystem grants**, not a separate IPC namespace | Fresh `/dev/shm` fixture is readable under default `/dev` read grant; writable open denied and bytes unchanged. No confidentiality claim for allowed read roots. Explicit write grants delegate shared-state authority |
+| POSIX named message queues | Core: measured Landlock protection under current policy/ABI | Exclusively created queue: baseline sends/receives; sandbox opens for send/receive denied, outside queue contents preserved. Disabling seccomp retains denial; disabling both Landlock domains permits effects. This is not IPC-namespace isolation or evidence for every queue operation/policy |
 | User-to-user AF_NETLINK | **DEGRADED / OPEN**, allowed family in net none | NETLINK_USERSOCK message arrives at a freshly bound outside fixture port in both baseline and sandbox. No kernel-control endpoint is contacted. “Local” does not mean isolated; kernel permissions on privileged netlink operations are host policy |
 | TTY / `/dev/pts`, device ioctls | **DEGRADED**, compatibility grants; no tty isolation claim | Reopening a new fixture pty slave and writing reaches its master. TIOCSTI on that fixture returns EIO in both baseline and sandbox on this host: host/kernel policy, NOT AgentGuard enforcement. IOCTL_DEV remains unhandled |
 | Writable files/FIFOs/shared scratch | Intentional policy delegation, not an IPC boundary | Phase 4 read/write matrix applies; default `/tmp` is shared writable authority, not private scratch. Existing file/pipe runner tests plus explicit keep tests cover inherited authority |
@@ -139,5 +141,9 @@ not revoke kept sockets, fix netlink, or verify the real D-Bus path.
 The [kernel's Landlock ptrace documentation](https://docs.kernel.org/7.0/userspace-api/landlock.html#ptrace-restrictions)
 describes the domain relationship underlying the memory tests. Evidence here is the
 fixture effects, not an assumption that host Yama/AppArmor policy provides our boundary.
-Scheduling controls, POSIX message queues and other untested same-UID APIs are not covered
-by these results; no exhaustive host-isolation guarantee is made.
+Scheduling and POSIX queue fixtures were added in slice 3. The scheduling setters allow
+only pid zero; setpriority/ioprio_set also require the single-process selector. Explicit
+PIDs/TIDs (even inside the sandbox) and group/UID selectors are denied. `nice`, `taskset`,
+`chrt`, `ionice` command launches and self-directed APIs are tested; libraries that pin
+other threads by explicit TID may need a future design. Untested same-UID APIs are not
+covered by these results; no exhaustive host-isolation guarantee is made.

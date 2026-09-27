@@ -34,7 +34,8 @@ $(BUILDDIR):
 # ASan/UBSan build in a separate directory: never clean the normal build or
 # caller-owned build output, and use the same suite list as the normal gate.
 check-asan:
-	ASAN_OPTIONS=detect_leaks=1 $(MAKE) check BUILDDIR=build/asan \
+	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+	    $(MAKE) check BUILDDIR=build/asan \
 	    CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
 
 check: all

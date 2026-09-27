@@ -9,6 +9,7 @@ import ctypes as C
 import errno
 import json
 import os
+import platform
 from pathlib import Path
 import select
 import shutil
@@ -26,6 +27,15 @@ LIB.shmat.restype = C.c_void_p
 LIB.ptrace.restype = C.c_long
 ORIGINAL = b"fixture-original"
 CHANGED = b"fixture-modified"
+SYSCALLS = {
+    "x86_64": {"ioprio_set": 251, "ioprio_get": 252, "sched_setattr": 314},
+    "aarch64": {"ioprio_set": 30, "ioprio_get": 31, "sched_setattr": 274},
+}.get(platform.machine(), {})
+
+
+class MQAttr(C.Structure):
+    _fields_ = [("flags", C.c_long), ("maxmsg", C.c_long), ("msgsize", C.c_long),
+                ("curmsgs", C.c_long), ("reserved", C.c_long * 4)]
 
 
 def checked(value):
@@ -40,6 +50,43 @@ class IOVec(C.Structure):
 
 
 def probe(op, args):
+    if op.startswith("schedule-"):
+        pid = int(args[0])
+        if op == "schedule-nice":
+            os.setpriority(os.PRIO_PROCESS, pid, 19)
+        elif op == "schedule-affinity":
+            os.sched_setaffinity(pid, {min(os.sched_getaffinity(pid))})
+        elif op == "schedule-policy":
+            os.sched_setscheduler(pid, os.SCHED_BATCH, os.sched_param(0))
+        elif op == "schedule-param":
+            os.sched_setparam(pid, os.sched_param(0))
+        elif op == "schedule-ioprio":
+            checked(LIB.syscall(SYSCALLS["ioprio_set"], 1, pid, 3 << 13))
+        elif op == "schedule-nice-group":
+            os.setpriority(os.PRIO_PGRP, pid, 19)
+        elif op == "schedule-ioprio-group":
+            checked(LIB.syscall(SYSCALLS["ioprio_set"], 2, pid, 3 << 13))
+        elif op == "schedule-attr":
+            class SchedAttr(C.Structure):
+                _fields_ = [("size", C.c_uint32), ("policy", C.c_uint32),
+                            ("flags", C.c_uint64), ("nice", C.c_int32),
+                            ("priority", C.c_uint32), ("runtime", C.c_uint64),
+                            ("deadline", C.c_uint64), ("period", C.c_uint64)]
+            attr = SchedAttr(size=C.sizeof(SchedAttr), policy=os.SCHED_BATCH)
+            checked(LIB.syscall(SYSCALLS["sched_setattr"], pid, C.byref(attr), 0))
+        return "changed"
+    if op in ("mq", "mq-read"):
+        flags = os.O_RDONLY if op == "mq-read" else os.O_WRONLY
+        fd = checked(LIB.mq_open(args[0].encode(), flags | os.O_NONBLOCK))
+        try:
+            if op == "mq-read":
+                buf = C.create_string_buffer(64)
+                checked(LIB.mq_receive(fd, buf, 64, None))
+            else:
+                checked(LIB.mq_send(fd, CHANGED, len(CHANGED), 0))
+        finally:
+            checked(LIB.mq_close(fd))
+        return "sent"
     if op in ("vm-read", "vm-write", "ptrace", "proc-read", "proc-write", "proc-fd"):
         pid, addr, fd = map(int, args)
         if op.startswith("vm-"):
@@ -133,8 +180,9 @@ class HostIPC(unittest.TestCase):
         cls.env = {"PATH": os.environ["PATH"], "HOME": str(cls.root),
                    "TMPDIR": str(cls.root), "XDG_RUNTIME_DIR": str(cls.root), "LC_ALL": "C"}
         # Keep sanitizer configuration, never forward login/session credentials.
-        if "ASAN_OPTIONS" in os.environ:
-            cls.env["ASAN_OPTIONS"] = os.environ["ASAN_OPTIONS"]
+        for key in ("ASAN_OPTIONS", "UBSAN_OPTIONS"):
+            if key in os.environ:
+                cls.env[key] = os.environ[key]
         cls.script = cls.root / HERE.name
         shutil.copyfile(HERE, cls.script)
         cls.candidate = cls.root / "unix-filter"
@@ -178,7 +226,7 @@ class HostIPC(unittest.TestCase):
         path.write_text("fixture-file-data")
         proc = subprocess.Popen([sys.executable, str(self.script), "--sentinel", str(path)],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, env=self.env)
+                                text=True, env=self.env, start_new_session=True)
         def cleanup():
             # The fixture is our child and has not been reaped, so PID reuse is impossible.
             if proc.poll() is None:
@@ -454,6 +502,91 @@ s.sendto(b'fixture-netlink', (int(sys.argv[1]), 0))
                 result = self.command([sys.executable, "-c", code, port], baseline=baseline)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(server.recv(64), b"fixture-netlink")
+
+    def test_outside_scheduling(self):
+        if not SYSCALLS:
+            self.skipTest("scheduling probe syscall numbers unavailable for this architecture")
+        for kind in ("nice", "affinity", "policy", "param", "attr", "ioprio",
+                     "nice-group", "ioprio-group"):
+            for disabled in ("baseline", "seccomp", ""):
+                with self.subTest(kind=kind, disabled=disabled):
+                    proc, args = self.outside()
+                    pid = args[0]
+                    def state():
+                        return (os.getpriority(os.PRIO_PROCESS, pid), os.sched_getaffinity(pid),
+                                os.sched_getscheduler(pid), os.sched_getparam(pid).sched_priority,
+                                checked(LIB.syscall(SYSCALLS["ioprio_get"], 1, pid)))
+                    before = state()
+                    got = self.attack("schedule-" + kind, [pid], baseline=disabled == "baseline",
+                                      disabled="seccomp" if disabled == "seccomp" else "")
+                    after = state()
+                    if disabled:
+                        self.assertEqual(got, {"value": "changed"})
+                        # sched_setparam with unprivileged priority 0 is a no-op;
+                        # a one-CPU cpuset similarly cannot discriminate affinity.
+                        if kind != "param" and not (kind == "affinity" and len(before[1]) == 1):
+                            self.assertNotEqual(before, after)
+                    else:
+                        self.assertEqual(got.get("errno"), errno.EPERM, (got, before, after))
+                        self.assertEqual(before, after)
+                    self.assertEqual(self.value(proc), ORIGINAL.decode())
+        # pid zero remains usable for ordinary developer tools.
+        for kind in ("nice", "affinity", "policy", "param", "attr", "ioprio"):
+            self.assertEqual(self.attack("schedule-" + kind, [0]), {"value": "changed"})
+
+    def test_scheduling_tools(self):
+        cpu = str(min(os.sched_getaffinity(0)))
+        for argv in (["nice", "-n", "1", "true"], ["taskset", "-c", cpu, "true"],
+                     ["chrt", "-b", "0", "true"], ["ionice", "-c", "3", "true"]):
+            with self.subTest(tool=argv[0]):
+                path = shutil.which(argv[0])
+                if path is None:
+                    self.skipTest(f"{argv[0]} not installed")
+                result = self.command([path, *argv[1:]])
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_posix_message_queue(self):
+        name = ("/" + self.root.name + "-mq").encode()
+        attrs = MQAttr(maxmsg=2, msgsize=64)
+        fd = checked(LIB.mq_open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NONBLOCK,
+                                 0o600, C.byref(attrs)))
+        self.addCleanup(lambda: checked(LIB.mq_unlink(name)))
+        self.addCleanup(lambda: checked(LIB.mq_close(fd)))
+        for baseline in (True, False):
+            got = self.attack("mq", [name.decode()], baseline=baseline)
+            buf = C.create_string_buffer(64)
+            count = LIB.mq_receive(fd, buf, 64, None)
+            print("POSIX mq", "baseline" if baseline else "sandbox", got,
+                  "received", count, flush=True)
+            if baseline:
+                self.assertEqual(got, {"value": "sent"})
+                self.assertEqual(buf.raw[:count], CHANGED)
+            else:
+                self.assertIn(got.get("errno"), (errno.EPERM, errno.EACCES), got)
+                self.assertEqual(count, -1)
+                self.assertEqual(C.get_errno(), errno.EAGAIN)
+        checked(LIB.mq_send(fd, ORIGINAL, len(ORIGINAL), 0))
+        got = self.attack("mq-read", [name.decode()])
+        buf = C.create_string_buffer(64)
+        count = LIB.mq_receive(fd, buf, 64, None)
+        print("POSIX mq sandbox read", got, "remaining", count, flush=True)
+        self.assertIn(got.get("errno"), (errno.EPERM, errno.EACCES), got)
+        self.assertEqual(buf.raw[:count], ORIGINAL)
+        # Attribute the denial by disabling each layer independently.
+        for disabled in ("seccomp", "landlock_fs,landlock_scope"):
+            allowed = disabled != "seccomp"
+            for op in ("mq", "mq-read"):
+                if op == "mq-read":
+                    checked(LIB.mq_send(fd, ORIGINAL, len(ORIGINAL), 0))
+                got = self.attack(op, [name.decode()], disabled=disabled)
+                buf = C.create_string_buffer(64)
+                count = LIB.mq_receive(fd, buf, 64, None)
+                if allowed:
+                    self.assertEqual(got, {"value": "sent"})
+                    self.assertEqual(count, 16 if op == "mq" else -1)
+                else:
+                    self.assertEqual(got.get("errno"), errno.EACCES)
+                    self.assertEqual(count, -1 if op == "mq" else 16)
 
 
 if __name__ == "__main__":

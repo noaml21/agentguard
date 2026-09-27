@@ -103,7 +103,7 @@ evidence is the recorded local `make -C sandbox check` / `check-asan` runs on th
   strict refuses (125, target not run) when the layer is unavailable or fails to apply;
   degraded status shows `missing`, and a degraded run can reach the sentinel with `kill -0`
   (the lost guarantee is real and reported).
-- **Phase 9 extended** (`sandbox/tests/hostipc_extended_test.py`, 13 test methods,
+- **Phase 9 extended** (`sandbox/tests/hostipc_extended_test.py`, 16 test methods,
   with operation/mode subtests; do not count subtests as additional top-level tests):
   outside sentinel memory read/write/attach and proc-fd reopen, independently testing
   Landlock and seccomp; inherited Unix/pidfd closure versus explicit delegation; the full
@@ -121,6 +121,13 @@ evidence is the recorded local `make -C sandbox check` / `check-asan` runs on th
   Further fixture classifications: `/dev/shm` object readable but not writable by default;
   new pty slave writable through default `/dev/pts`; TIOCSTI baseline/sandbox both EIO on
   dev host (host policy); NETLINK_USERSOCK reaches a fresh outside fixture port.
+  Scheduling: private sentinel processes/groups, outside snapshots of nice/affinity/
+  scheduling policy/priority/I/O priority; baseline and omitted-seccomp controls permit
+  changes, normal runs deny them; self APIs and nice/taskset/chrt/ionice launches work.
+  sched_setparam priority zero is a no-op even in baseline and is not effect-discriminating;
+  an affinity test on a one-CPU cpuset similarly cannot demonstrate a change.
+  POSIX message queue: exclusive fresh name, baseline send/receive effects, Landlock
+  denials with queue contents preserved, independent omitted-layer controls.
   Required kernel layers absent: extended suite skips with an explicit reason rather than
   presenting its fixtures as verified. All fixture commands use a fresh HOME, minimal
   environment and bounded execution; no real session bus or existing SysV ID is touched.
@@ -129,3 +136,5 @@ evidence is the recorded local `make -C sandbox check` / `check-asan` runs on th
 
 `check-asan` now recursively invokes the same `check` suite list with binaries under
 `sandbox/build/asan`; it no longer deletes or replaces the normal build directory.
+UBSan uses `halt_on_error=1:print_stacktrace=1`, propagated through the extended suite's
+isolated environment, so a captured diagnostic cannot silently pass with exit status zero.

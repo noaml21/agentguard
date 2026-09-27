@@ -163,6 +163,43 @@ static const int kDenied[] = {
 #endif
 };
 
+/* Setters whose first argument is a pid_t. Permit only pid 0 (caller), since
+ * seccomp cannot identify whether a nonzero PID belongs to this sandbox. This
+ * also excludes targeting another sandbox thread explicitly. Self-directed
+ * libc resource/scheduler APIs and nice/taskset/chrt command launches use 0.
+ * Landlock's ptrace/signal checks do NOT mediate outside scheduling changes. */
+static const int kSelfPid[] = {
+#ifdef SYS_prlimit64
+    SYS_prlimit64,
+#endif
+#ifdef SYS_sched_setparam
+    SYS_sched_setparam,
+#endif
+#ifdef SYS_sched_setscheduler
+    SYS_sched_setscheduler,
+#endif
+#ifdef SYS_sched_setaffinity
+    SYS_sched_setaffinity,
+#endif
+#ifdef SYS_sched_setattr
+    SYS_sched_setattr,
+#endif
+};
+
+/* which/who setters must select a single process and who=0. Allowing process
+ * group or UID selectors could change unrelated host processes. */
+static const struct {
+    int nr;
+    uint32_t process_selector;
+} kSelfWho[] = {
+#ifdef SYS_setpriority
+    {SYS_setpriority, 0}, /* PRIO_PROCESS */
+#endif
+#ifdef SYS_ioprio_set
+    {SYS_ioprio_set, 1},  /* IOPRIO_WHO_PROCESS */
+#endif
+};
+
 /* Namespace-creation flags for clone(2). We cannot deny clone() outright because
  * glibc fork()/pthread_create route through clone/clone3, so we filter the flags
  * argument instead: clone() with any new-namespace bit is denied. This closes the
@@ -198,10 +235,11 @@ int sc_apply(int deny_inet)
     }
 
     size_t ndeny = sizeof(kDenied) / sizeof(kDenied[0]);
-    /* header(3)+x32(2)+load nr(1)+2*deny+clone3(2)+clone block(5)+prlimit block(5)+
-     * socket block(6)+allow(1) */
+    /* header(3)+x32(2)+load nr(1)+2*deny+clone3(2)+clone block(5)+
+     * 5*self-pid rules+7*self-who rules+socket block(6)+allow(1) */
     struct sock_filter prog[3 + 2 + 1 + 2 * (sizeof(kDenied) / sizeof(kDenied[0])) + 2 + 5 +
-                            5 + 6 + 1];
+                            5 * (sizeof(kSelfPid) / sizeof(kSelfPid[0])) +
+                            7 * (sizeof(kSelfWho) / sizeof(kSelfWho[0])) + 6 + 1];
     size_t n = 0;
 
     /* Load arch; kill if it isn't what we built for (blocks int-0x80 / wrong ABI). */
@@ -255,29 +293,37 @@ int sc_apply(int deny_inet)
         BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
 #endif
 
-#ifdef SYS_prlimit64
-    /* prlimit64(pid, ...) only for pid 0 (the caller). A nonzero pid names another
-     * process: same-UID callers could otherwise change an outside process's limits
-     * (e.g. lower its RLIMIT_NOFILE, or raise RLIMIT_CORE so it dumps memory).
-     * glibc getrlimit/setrlimit, bash ulimit and python resource.setrlimit all
-     * pass pid 0 (measured with strace, Phase 9). An explicit own pid is also
-     * denied -- seccomp cannot tell whose pid it is. The kernel reads pid as a
-     * 32-bit pid_t, so checking the low word is exact. 5-instruction block. */
-    /* [0] reload nr (the clone block may have left flags in A). */
-    prog[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
-                                             offsetof(struct seccomp_data, nr));
-    /* [1] if nr==prlimit64 fall through, else skip [2..4]. */
-    prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
-                                             (uint32_t)SYS_prlimit64, 0, 3);
-    /* [2] load pid = args[0] low 32 bits. */
-    prog[n++] = (struct sock_filter)BPF_STMT(
-        BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[0]));
-    /* [3] pid 0 skips the deny. */
-    prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
-    /* [4] another process: deny. */
-    prog[n++] = (struct sock_filter)BPF_STMT(
-        BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
-#endif
+    for (size_t i = 0; i < sizeof(kSelfPid) / sizeof(kSelfPid[0]); i++) {
+        /* Five instructions: reload nr; skip args+deny for other syscalls;
+         * load the low word (kernel pid_t is 32 bits); pid 0 skips the deny. */
+        prog[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                                 offsetof(struct seccomp_data, nr));
+        prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                 (uint32_t)kSelfPid[i], 0, 3);
+        prog[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                                 offsetof(struct seccomp_data, args[0]));
+        prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
+        prog[n++] = (struct sock_filter)BPF_STMT(
+            BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
+    }
+
+    for (size_t i = 0; i < sizeof(kSelfWho) / sizeof(kSelfWho[0]); i++) {
+        /* Seven instructions: other syscalls skip [2..6]; wrong selector jumps
+         * from [3] to deny [6]; only who=0 skips that deny. */
+        prog[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                                 offsetof(struct seccomp_data, nr));
+        prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                 (uint32_t)kSelfWho[i].nr, 0, 5);
+        prog[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                                 offsetof(struct seccomp_data, args[0]));
+        prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                                                 kSelfWho[i].process_selector, 0, 2);
+        prog[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                                 offsetof(struct seccomp_data, args[1]));
+        prog[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
+        prog[n++] = (struct sock_filter)BPF_STMT(
+            BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
+    }
 
 #ifdef SYS_socket
     /* Network mode none: socket() is allowed only for AF_UNIX (local IPC) and

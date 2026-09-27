@@ -294,3 +294,19 @@ The memory/process, inherited-fd, SysV, socket and compatibility evidence is in
 `sandbox/tests/hostipc_extended_test.py`; surface classifications and remaining gaps are
 in THREAT_MODEL §6. In particular AF_NETLINK, default `/dev` reads and `/dev/pts` writes
 are not complete host-IPC isolation. The real session-D-Bus finding remains OPEN.
+
+The continued inventory found that Landlock does not block same-UID scheduling setters.
+`prlimit64`'s pid-zero rule is now a shared five-instruction block used also for
+`sched_setparam`, `sched_setscheduler`, `sched_setaffinity`, and `sched_setattr`.
+Each reloads the syscall number before inspecting the low 32-bit pid_t argument.
+Seven-instruction blocks for `setpriority` and `ioprio_set` additionally require the
+single-process selector and who=0; group/UID selectors cannot target outside processes.
+Explicit PIDs/TIDs are rejected even for the caller or its descendants; common
+nice/taskset/chrt/ionice command launches still work. This is narrower than a namespace:
+it does not support manipulating other sandbox threads by TID.
+
+POSIX message-queue fixtures needed no new runtime rule: current Landlock domains deny
+opens for send/receive; both baseline and a run without Landlock can operate on the same
+exclusively created queue. Effects are checked by receiving from outside, with every
+fixture queue closed/unlinked by its owner. Do not generalize this to untested queue
+operations, policies, or kernel ABIs.
