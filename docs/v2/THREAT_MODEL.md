@@ -6,7 +6,7 @@ Claim tags: **IMPLEMENTED** (code exists), **VERIFIED** (test evidence on a name
 
 ## 1. Why V1 is insufficient
 
-V1 (see `/THREAT_MODEL.md`) inspects tool-request *text*: a regex firewall for Bash
+V1 (see the [V1 threat model](../v1/THREAT_MODEL.md)) inspects tool-request *text*: a regex firewall for Bash
 commands and a canonical-path check for Read/Edit/Write. Its own threat model states
 the limits: equivalent effects can be written through interpreters, indirection,
 variable expansion, alternate programs, and symlinks; a Bash command bypasses the

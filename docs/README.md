@@ -1,19 +1,30 @@
-# AgentGuard documentation
+# Documentation
 
-Start with the [project README](../README.md). Then, by question:
+Start with the [project README](../README.md).
 
-| Question | Document |
+## V2 kernel sandbox (current reference)
+
+| Document | Contents |
 |---|---|
-| What does V2 enforce, and how is it built? | [v2/ARCHITECTURE.md](v2/ARCHITECTURE.md) |
-| What is guaranteed, in which mode, against whom — and what is not? | [v2/THREAT_MODEL.md](v2/THREAT_MODEL.md) |
-| Which tests prove each claim, and what runs in CI? | [v2/TEST_PLAN.md](v2/TEST_PLAN.md) |
-| How do the mechanisms work, in plain language? | [process/WALKTHROUGH.md](process/WALKTHROUGH.md) |
-| What is the release-candidate status and evidence summary? | [v2/V2_BUILD_REPORT.md](v2/V2_BUILD_REPORT.md) |
-| How does V1 compare with V2 on the same attacks? | [../redteam/results/comparison.md](../redteam/results/comparison.md), [../redteam/README.md](../redteam/README.md) |
-| What are the V1 hook layer's boundaries? | [../THREAT_MODEL.md](../THREAT_MODEL.md) |
+| [v2/ARCHITECTURE.md](v2/ARCHITECTURE.md) | Supervisor/child design, setup order, each enforcement layer, network modes, resource limits, policy format, V1 integration |
+| [v2/THREAT_MODEL.md](v2/THREAT_MODEL.md) | Adversary, guarantees per mode, residual risks, non-goals, host-IPC surface inventory |
+| [v2/TEST_PLAN.md](v2/TEST_PLAN.md) | Every suite, what its oracles check, CI tiers and skip rules |
+| [v2/WALKTHROUGH.md](v2/WALKTHROUGH.md) | The mechanisms explained in plain language |
+| [v2/V2_BUILD_REPORT.md](v2/V2_BUILD_REPORT.md) | Release-candidate summary: properties, comparison, tests, limitations |
+| [../redteam/README.md](../redteam/README.md) | Red-team corpus format and outcome classes; results in [comparison.md](../redteam/results/comparison.md) |
 
-Engineering process records (kept for traceability, not required reading):
+## V1 workflow guardrails
 
-- [v2/PLAN.md](v2/PLAN.md) — the fixed phase roadmap and completion gates.
-- [process/BUILD_LOG.md](process/BUILD_LOG.md) — append-only evidence log, per session.
-- [process/BUILD_STATE.md](process/BUILD_STATE.md) — current resume pointer.
+| Document | Contents |
+|---|---|
+| [v1/THREAT_MODEL.md](v1/THREAT_MODEL.md) | Hook-layer assets, trust boundaries, controls and residual risks |
+
+## Engineering history
+
+Kept for traceability. Not needed to use or review the project.
+
+| Document | Contents |
+|---|---|
+| [v2/PLAN.md](v2/PLAN.md) | Fixed phase roadmap and completion gates (phases 0–12) |
+| [process/BUILD_LOG.md](process/BUILD_LOG.md) | Append-only evidence log, per session: measurements, bugs found, test counts |
+| [process/BUILD_STATE.md](process/BUILD_STATE.md) | Resume pointer: current commit, verification status, constraints |

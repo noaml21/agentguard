@@ -1,6 +1,6 @@
 # AgentGuard V2 build report
 
-Release status: **verified release candidate `2.0.0-rc.1`** on branch `v2/kernel-sandbox`.
+Release status: verified release candidate `2.0.0-rc.1` on branch `v2/kernel-sandbox`.
 Not merged to `main`, not tagged, no GitHub release; those steps await maintainer
 approval. Exact commits, local counts and CI runs for the final head are in
 [`docs/process/BUILD_STATE.md`](../process/BUILD_STATE.md); per-session evidence is in
@@ -8,7 +8,8 @@ approval. Exact commits, local counts and CI runs for the final head are in
 
 ## Architecture
 
-`agentguard-run` is a ~2.8k-line C launcher (sources + headers) (no dependencies beyond kernel UAPI headers).
+`agentguard-run` is about 2.8k lines of C (sources and headers) with no dependencies
+beyond the kernel UAPI headers.
 An unrestricted supervisor validates policy, probes the kernel, forks, and owns the
 lifecycle (signal forwarding, deadline, cgroup kill, reaping). The child restricts itself
 in a fixed order — owned cgroup, fd sanitation, rlimits, no_new_privs, Landlock filesystem
@@ -21,7 +22,8 @@ layer applies, and the target never runs before enforcement. Details:
 
 - Filesystem: reads and writes outside the workspace and explicit grants are denied for
   the target and every descendant, independent of spelling (symlinks, `..`, hard links,
-  renames, interpreters, grandchildren); `$HOME` is not readable by default.
+  renames, interpreters, grandchildren); `$HOME` outside the workspace is not readable
+  by default.
 - `--net none`: no IP socket of any family can be created; `--net all` is host networking.
 - Same-UID process interference: signals and abstract-Unix connects to outside processes,
   ptrace/process_vm, sensitive `/proc/PID` access, outside `prlimit` and scheduling
@@ -29,19 +31,20 @@ layer applies, and the target never runs before enforcement. Details:
   shows the effect without AgentGuard.
 - Privilege and kernel surface: no_new_privs; namespaces, mounts, bpf, perf, io_uring,
   kernel modules denied.
-- Control plane: a policy file or installed runner inside any writable root is refused;
-  17 tamper spellings leave policy and runner byte-identical.
+- Control plane: in policy mode, a policy file or runner inside any writable root is
+  refused (CLI mode reports the runner location); 17 tamper spellings leave policy and
+  runner byte-identical.
 - Fail-closed contract: unavailable or failing required layers never run the target;
   degraded mode lists missing guarantees; status always reports host-IPC isolation as false.
 
 ## Comparison with V1 (Phase 11, `redteam/results/comparison.md`)
 
 36 effect-based cases with a baseline control each. V1 (text guardrails): 8 prevented,
-24 bypasses, 1 false positive, 3 allowed-safe. V2 (kernel boundary): 17 prevented — every
-V1 bypass whose target is outside the workspace (14) plus the cases V1 also stopped —,
-14 allowed because they act inside the granted workspace (by design), 4 legitimate
-workflows allowed, 1 out of scope (text-only case), **0 unexpected**. V1 remains useful as
-early feedback, audit and snapshots; it is not a boundary.
+24 bypasses, 1 false positive, 3 allowed-safe. V2 (kernel boundary): 17 prevented, 14
+allowed because they act inside the granted workspace (by design), 4 legitimate workflows
+allowed, 1 out of scope (text-only case), 0 unexpected. The 17 include all 14 V1 bypasses
+whose target is outside the workspace. V1 remains useful for early feedback, audit and
+snapshots; it is not a boundary.
 
 ## Compatibility (Phase 10)
 
@@ -71,9 +74,9 @@ kernel-feature preflight that skips a tier visibly (warning + step summary) inst
 passing it when a required layer is missing. The 6 delegated-cgroup cases skip with a
 reason on GitHub runners and are verified only on the dev host.
 
-## Limitations (not buried)
+## Limitations
 
-- **No complete same-UID host-service isolation.** Pathname AF_UNIX is not mediated on the
+- No complete same-UID host-service isolation. Pathname AF_UNIX is not mediated on the
   verified ABIs; a sandboxed process reached the session D-Bus and asked `systemd --user`
   to start an unrestricted process (Phase 6, historical; not re-executed at the final
   head; no later mechanism mediates it). `host_ipc.isolation_enforced` is false in every

@@ -534,3 +534,14 @@ labelled residuals; host-IPC limit stated in README, status output, report, thre
 (maintainer) docs index links every claim source; process files kept as history.
 **Phase 12 gate met (CI green with truthful skips; README complete). Phases 0–12
 COMPLETE; V2 release candidate `2.0.0-rc.1` verified.** Not merged, not tagged.
+Final-head CI: run 37016989950 on `79df608`, success (all four jobs).
+
+## 2026-10-02 — Session 4: presentation pass (documentation only)
+
+No code, test, CI or hook change. Moved the V1 threat model `THREAT_MODEL.md` →
+`docs/v1/THREAT_MODEL.md` and `docs/process/WALKTHROUGH.md` → `docs/v2/WALKTHROUGH.md`
+(public explainer, not process history); inbound references were Markdown only and are
+updated. Earlier entries in this log keep the paths that were current when written.
+README shortened to a landing page; `docs/README.md` split into V2 reference, V1, and
+engineering history; build report wording tightened (policy-mode scope of the runner
+location check, `$HOME` outside the workspace). No claim was broadened.

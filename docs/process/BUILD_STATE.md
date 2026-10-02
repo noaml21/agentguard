@@ -23,6 +23,8 @@
   (incl. V1 hook config) unprotected by design; shared `/tmp`, `/dev/shm` reads,
   `/dev/pts`, user netlink; no aggregate resource limits; no destination filtering;
   x86_64 only verified. Full list: `docs/v2/THREAT_MODEL.md`, `docs/v2/V2_BUILD_REPORT.md`.
+- **Docs layout**: `docs/v2/` current reference (incl. WALKTHROUGH), `docs/v1/` V1 threat
+  model, `docs/process/` history; map in `docs/README.md`.
 - **Running operations**: none. Worktree clean after the final commit.
 - **Next action**: optional PR from `v2/kernel-sandbox` to `main`, merge, and a `v2.0.0`
   tag/release — only with explicit user approval.
