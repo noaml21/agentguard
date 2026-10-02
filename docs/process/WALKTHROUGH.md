@@ -238,6 +238,23 @@ thread by explicit TID are also denied, a limitation of this simple syscall filt
 Separately, a fresh POSIX message-queue fixture confirms that the current Landlock policy
 denies opening it for send or receive. The outside queue still holds its original message.
 
+## Running an agent under both layers (Phase 10)
+
+`agentguard-agent -- claude` is a thin wrapper around `agentguard-run`. It makes the
+repository the writable workspace, lets the agent's own install directory be read so it
+can start, and grants write access to the agent's state files (`~/.claude`,
+`~/.claude.json`). Everything else in your home directory stays invisible. Network
+defaults to `all` for an API-backed agent — there is no destination filtering — and
+`AGENTGUARD_NET=none` turns it off for offline work.
+
+Claude Code then runs the V1 hooks itself, inside the sandbox. They still give early,
+readable feedback ("blocked by policy pattern …"), keep snapshots and an audit log. But
+since the repository is writable, a determined agent could edit the hook configuration with
+a shell command; V1 is guidance for a cooperative agent, and V2 is what the kernel
+enforces regardless. The Phase 10 tests check the everyday tools (git, make/gcc, Python,
+Node) and that their children — a make recipe, a git hook, a Python grandchild — get the
+same restrictions as the agent.
+
 ## How Phase 9 closed: weaken the claim, do not fake the mechanism
 
 The Phase 9 gate asks that every host-IPC surface be classified Core, non-goal or degraded,

@@ -14,6 +14,7 @@ just exit codes.
 | Runner unit/integration | `sandbox/tests/` via `make -C sandbox check` | gcc, python3 | **not yet** (Phase 12) |
 | Kernel-feature tests | same, tagged | Landlock ABI ≥ N, seccomp | **not yet** (Phase 12: skip with reason when the runner kernel lacks the feature) |
 | Host-only enhanced | same, tagged | namespaces / delegated cgroup | skip with reason in CI; never reported as verified when skipped |
+| Dev workflows + agent wrapper (Phase 10) | `sandbox/tests/devworkflow_test.sh` (part of `check`) | git, make, gcc, python3; node optional | **not yet** (Phase 12) |
 | Sanitizers | `make -C sandbox check-asan` | gcc ASan/UBSan | **not yet** (Phase 12) |
 | V2 red-team replay | `redteam/run_v2.py` | built runner | planned (Phase 11/12) |
 
@@ -137,6 +138,27 @@ evidence is the recorded local `make -C sandbox check` / `check-asan` runs on th
   real session-D-Bus authority experiment is historical Phase 6 evidence and is
   deliberately **not** part of any suite (it contacts a real host service). The residual is
   accepted and reported (`host_ipc.isolation_enforced:false`), not claimed fixed.
+
+- **Phase 10** (`sandbox/tests/devworkflow_test.sh`, 16 cases). Disposable root under
+  `sandbox/build/` — deliberately **not** `/tmp`, which the default policy grants writable,
+  so "outside" fixtures are outside every default root — with a fake `HOME` holding a
+  fixture `~/.ssh` key, `~/.claude/` and `~/.claude.json`. Default policy (what users get):
+  shell pipes/redirects/symlinks; git init/add/commit, `status --porcelain`, `diff`,
+  branch/switch/fast-forward merge in a disposable repo; `make` + `gcc` multi-file build
+  writing objects in the workspace and running the result; python file write +
+  subprocess + asyncio subprocess; node `child_process` exec/spawn (skip if node absent).
+  Descendant restrictions: a `make` recipe, a python→sh grandchild, a node child and a git
+  `pre-commit` hook (spawned by git) all fail to read/write the outside fixture while the
+  surrounding workflow succeeds; `$HOME` is neither readable nor listable. Wrapper: a
+  fixture agent installed in a non-default directory starts through `agentguard-agent`,
+  edits the repo, writes `~/.claude/` and `~/.claude.json`, runs git, and is denied
+  `~/.ssh` and the outside fixture; a missing agent exits 127; `--status` through the
+  wrapper shows `--net all` and `host_ipc.isolation_enforced:false`. V1 integration: the
+  V1 suite `tests/run_tests.sh` runs unchanged inside the runner (40/40). Terminal/TTY and
+  cancellation/deadline behavior are already covered by `tty_test.py` and Phase 2/7 tests,
+  not duplicated. Manual evidence (not in the suite, needs Claude Code installed):
+  `agentguard-agent -- claude --version` with `AGENTGUARD_NET=none` printed the version on
+  the dev host; no authenticated Claude session is part of any test.
 
 `check-asan` now recursively invokes the same `check` suite list with binaries under
 `sandbox/build/asan`; it no longer deletes or replaces the normal build directory.

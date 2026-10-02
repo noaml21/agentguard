@@ -429,4 +429,35 @@ explicit delegation; writable shared files → intentional delegation. Every PLA
 (signals, ptrace, abstract/pathname unix sockets, inherited fds) is covered.
 **Phase 9 COMPLETE.** Docs updated: THREAT_MODEL (§4 row, §4.1, §5, §6), ARCHITECTURE,
 TEST_PLAN, WALKTHROUGH, BUILD_STATE. Verification for this docs-only unit at `3be56ca`
-code: listed in BUILD_STATE.
+code: `make -C sandbox check` 210/210, V1 40/40, `git diff --check` clean (dev host kernel
+now 7.0.0-38). Committed/pushed `d015065`.
+
+## 2026-10-02 — Session 4: Phase 10 (V1 + V2 integration)
+
+Added: `sandbox/scripts/agentguard-agent` (wrapper computing the documented recipe and
+exec'ing the runner: workspace = git toplevel, `--net ${AGENTGUARD_NET:-all}`, read access
+to the agent's resolved install dir, write access to existing `~/.claude`,
+`~/.claude.json`, `$AGENTGUARD_AGENT_WRITE`); `make -C sandbox install` (runner + wrapper
+into `~/.local/bin`); suite `sandbox/tests/devworkflow_test.sh` (16 cases) wired into
+`check`/`check-asan`. No runner C code changed.
+
+Fixture design: root under `sandbox/build/`, not `/tmp`, because the default policy grants
+`/tmp` writable and an "outside" fixture there would be inside granted authority. Fake HOME
+with fixture `~/.ssh` key and agent state.
+
+Test bugs found before trusting results (enforcement correct in each): (1) a failed redirect
+prints its error before `2>/dev/null` applies — wrapped in a subshell; (2) the fake agent
+used `git -C repo` from inside the repo; (3) under `make check` the suite inherited
+`MAKEFLAGS`/`MAKELEVEL` (nested make printed directory lines; under check-asan it would
+also inherit sanitizer CFLAGS) — the suite now unsets them.
+
+Manual evidence: `AGENTGUARD_NET=none sandbox/scripts/agentguard-agent -- claude --version`
+→ `2.1.287 (Claude Code)`, rc 0 (dev host; no authenticated session, no network).
+Documented the V1/V2 boundary split, including that V1's control plane in a writable
+workspace is not protected by V2 (ARCHITECTURE "V1 + V2 integration").
+
+Verified (dev host, kernel 7.0.0-38): `devworkflow_test.sh` 16/16; `make -C sandbox check`
+**226/226** (210 shell PASS + 16 python test methods, 0 skipped); `check-asan` **226/226**,
+no ASan/UBSan/LSan reports; V1 `tests/run_tests.sh` 40/40 (and 40/40 inside the runner);
+`git diff --check` clean. **Phase 10 gate met: common dev commands work inside the sandbox;
+descendants covered. Phase 10 COMPLETE.**

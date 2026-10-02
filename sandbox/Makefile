@@ -14,7 +14,7 @@ OBJ := $(patsubst src/%.c,$(BUILDDIR)/%.o,$(SRC))
 DEP := $(OBJ:.o=.d)
 BIN := $(BUILDDIR)/agentguard-run
 
-.PHONY: all clean check check-asan
+.PHONY: all clean check check-asan install
 
 all: $(BIN)
 
@@ -48,7 +48,16 @@ check: all
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/policy_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/hostipc_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) python3 tests/hostipc_extended_test.py
+	AGENTGUARD_RUN=$(abspath $(BIN)) bash tests/devworkflow_test.sh
 	AGENTGUARD_RUN=$(abspath $(BIN)) python3 tests/tty_test.py
+
+# Install outside any workspace (policy mode refuses a runner the target could
+# replace). Default: ~/.local/bin. The wrapper finds the runner beside itself.
+PREFIX ?= $(HOME)/.local
+install: all
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/bin/agentguard-run
+	install -m 0755 scripts/agentguard-agent $(DESTDIR)$(PREFIX)/bin/agentguard-agent
 
 clean:
 	rm -rf $(BUILDDIR)

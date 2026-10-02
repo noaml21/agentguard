@@ -1,8 +1,11 @@
 # Build State (resume pointer)
 
 - **Branch**: `v2/kernel-sandbox` (never merge to `main` without user approval).
-- **Current phase/unit**: Phase 10 (V1 + V2 integration) — next.
-- **Complete**: Phases 0–9. Phase 9 closed 2026-10-02 by classification under the PLAN gate
+- **Current phase/unit**: Phase 11 (V1 vs V2 comparison) — next.
+- **Phase 10 COMPLETE (2026-10-02)**: `sandbox/scripts/agentguard-agent` wrapper,
+  `make -C sandbox install`, `tests/devworkflow_test.sh` (16). `make check` 226/226,
+  `check-asan` 226/226 clean, V1 40/40 (also 40/40 inside the runner).
+- **Complete**: Phases 0–10. Phase 9 closed 2026-10-02 by classification under the PLAN gate
   and scope rule (BUILD_LOG "Session 4"): pathname AF_UNIX same-UID host services are
   **not isolated** (degraded, all modes, reported `host_ipc.isolation_enforced:false`);
   the Phase 6 session-bus escape is historical VERIFIED evidence, not re-executed at the

@@ -315,3 +315,38 @@ opens for send/receive; both baseline and a run without Landlock can operate on 
 exclusively created queue. Effects are checked by receiving from outside, with every
 fixture queue closed/unlinked by its owner. Do not generalize this to untested queue
 operations, policies, or kernel ABIs.
+
+## V1 + V2 integration (Phase 10)
+
+The two layers answer different questions and have different threat boundaries:
+
+| | V1 workflow guardrails (`.claude/settings.json` hooks) | V2 runtime enforcement (`agentguard-run`) |
+|---|---|---|
+| Sees | the *text* of each Claude tool request (Bash command, file path) | the *effect* of every syscall of the agent and all descendants |
+| Decides with | regex firewall, canonical path policy, commit policy, rate limit | Landlock, seccomp, no_new_privs, rlimits, deadline/cgroup kill |
+| Good at | early, explainable feedback; audit log; pre-change snapshots; workflow conventions (commit messages, syntax checks) | denying outside-workspace reads/writes, IP networking (`--net none`), outside signals/ptrace, namespace/mount/bpf/io_uring, regardless of spelling |
+| Known limits | any equivalent spelling, interpreter, indirection (Phase 1: 11 bypasses) | claims only what THREAT_MODEL §4 verifies; documented residuals include same-UID host services over pathname AF_UNIX, shared default grants (`/tmp`), and everything inside the granted workspace |
+| Runs | inside the agent process tree (hooks are child processes of Claude Code) | as the supervisor *outside* the restricted tree |
+
+Composition: `agentguard-agent` (or `agentguard-run … -- claude`) starts Claude Code inside
+V2; Claude Code then runs the V1 hooks as its own children, so the hooks are themselves
+sandboxed and keep working (the V1 suite passes 40/40 under the runner). V1 state
+(`.agentguard/`) lives in the workspace, which is writable.
+
+Consequence to state plainly: **V1's control plane is not protected by V2 when the
+repository is the workspace.** The sandboxed agent may edit `.claude/settings.json`,
+`agentguard/hooks/` or V1 state through Bash — exactly the V1 bypass class — because the
+whole workspace is granted. V2's own control plane (the policy file and an installed
+runner) is outside every writable root and protected (Phase 8). V1 remains a
+cooperative-agent UX layer; V2 is the boundary.
+
+`sandbox/scripts/agentguard-agent [runner options] [-- COMMAND …]` is a ~40-line wrapper,
+not a new mechanism. It computes the recipe and `exec`s the runner: workspace = enclosing
+git repository (else cwd); `--net ${AGENTGUARD_NET:-all}` (an API agent needs egress; there
+is no destination filtering); `--allow-read` the directory of the agent's resolved
+executable (agents installed under `$HOME` must be able to start); `--allow-write` each
+*existing* agent state path (`~/.claude`, `~/.claude.json`, plus
+`$AGENTGUARD_AGENT_WRITE`). User options are appended after the recipe and can override it.
+The agent state paths are deliberately writable authority: the agent can modify its own
+configuration (including hooks configured there). `make -C sandbox install` installs the
+runner and wrapper into `~/.local/bin`, outside the workspace, which policy mode requires.
