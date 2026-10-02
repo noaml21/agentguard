@@ -461,3 +461,28 @@ Verified (dev host, kernel 7.0.0-38): `devworkflow_test.sh` 16/16; `make -C sand
 no ASan/UBSan/LSan reports; V1 `tests/run_tests.sh` 40/40 (and 40/40 inside the runner);
 `git diff --check` clean. **Phase 10 gate met: common dev commands work inside the sandbox;
 descendants covered. Phase 10 COMPLETE.**
+Committed/pushed `8c5b8bd`.
+
+## 2026-10-02 — Session 4: Phase 11 (V1 vs V2 comparison)
+
+Found `redteam/cases.json`: an unused Phase 1 draft, truncated mid-string (invalid JSON),
+read by no runner. Kept unchanged and labelled in `redteam/README.md`; the canonical corpus
+remains `cases/corpus.json`. Its ideas were re-expressed as `cases/expanded.json` (16 cases,
+canonical schema, disposable `../outside` fixtures); its real-`~/.ssh` case was excluded.
+
+Added `redteam/run_v2.py`: V1 column from the unchanged `run_v1.run_case`, a baseline
+control without a sandbox, and the V2 column inside `agentguard-run` (default policy,
+`--net none`, fixture HOME; file tools via a sandboxed helper). Classification by effect
+target, not command text: prevented-by-v2-boundary / allowed-inside-granted-authority /
+out-of-scope / legitimate-allowed / unexpected-failure. Fixtures under `build/redteam-v2/`
+(refuses `/tmp`, `/var/tmp`, `/dev/shm`). `run_v1.build_fixture` gained an optional
+`base` and creates nested outside fixture dirs; V1 output unchanged (`v1_results.json`
+byte-identical after rerun: bypass=11, prevented=7, allowed-safe=2).
+
+Result (dev host, kernel 7.0.0-38), 36 cases: prevented 17, granted 14, legitimate 4,
+out-of-scope 1, unexpected **0**. V1 over the same 36: bypass 24, prevented 8, allowed-safe
+3, false-positive 1 (`rm -rf build` cleanup). V1 bypasses prevented by V2: 14 (every one
+whose target is outside the workspace); V1 bypasses inside granted authority: 10 (stay
+possible by design: workspace deletes, `git reset --hard`, `.env`, V1 control-plane copy).
+Rerun produced byte-identical artifacts. **Phase 11 gate met (reproducible matrix, failures
+kept visible). Phase 11 COMPLETE.**

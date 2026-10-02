@@ -31,14 +31,16 @@ def resolve(workspace, root, spec):
     return os.path.join(workspace, spec)
 
 
-def build_fixture(case):
-    root = tempfile.mkdtemp(prefix="agentguard-redteam.")
+def build_fixture(case, base=None):
+    root = tempfile.mkdtemp(prefix="agentguard-redteam.", dir=base)
     workspace = os.path.join(root, "workspace")
     outside = os.path.join(root, "outside")
     os.makedirs(workspace)
     os.makedirs(outside)
     for name, content in case.get("setup_outside", {}).items():
-        with open(os.path.join(outside, name), "w") as fh:
+        path = os.path.join(outside, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
             fh.write(content)
     for rel, content in case.get("setup_files", {}).items():
         path = os.path.join(workspace, rel)

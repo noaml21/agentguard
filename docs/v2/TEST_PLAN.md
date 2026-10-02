@@ -16,7 +16,7 @@ just exit codes.
 | Host-only enhanced | same, tagged | namespaces / delegated cgroup | skip with reason in CI; never reported as verified when skipped |
 | Dev workflows + agent wrapper (Phase 10) | `sandbox/tests/devworkflow_test.sh` (part of `check`) | git, make, gcc, python3; node optional | **not yet** (Phase 12) |
 | Sanitizers | `make -C sandbox check-asan` | gcc ASan/UBSan | **not yet** (Phase 12) |
-| V2 red-team replay | `redteam/run_v2.py` | built runner | planned (Phase 11/12) |
+| V2 red-team replay + V1 comparison | `redteam/run_v2.py` | built runner, bash, perl, git | **not yet** (Phase 12) |
 
 **CI today** (`.github/workflows/ci.yml`) runs only `tests/run_tests.sh` (the V1 suite) on
 `ubuntu-latest`. A green CI run is therefore **not** evidence for any V2 sandbox test; V2
@@ -159,6 +159,20 @@ evidence is the recorded local `make -C sandbox check` / `check-asan` runs on th
   not duplicated. Manual evidence (not in the suite, needs Claude Code installed):
   `agentguard-agent -- claude --version` with `AGENTGUARD_NET=none` printed the version on
   the dev host; no authenticated Claude session is part of any test.
+
+- **Phase 11** (`redteam/run_v2.py`; artifacts `redteam/results/v2_results.json`,
+  `redteam/results/comparison.md`). 36 cases: the 20 unchanged Phase 1 cases plus 16 in
+  `cases/expanded.json` (outside-target spellings — long options, variable command name,
+  reversed payload piped to bash, perl, python, truncate, computed absolute path, xargs,
+  workspace script — symlink write, hard-link write and read, rename out of the
+  workspace; a V1 control-plane copy inside the workspace; two legitimate workflows).
+  Each case gets a baseline control without a sandbox; a case whose baseline does not
+  reproduce is reported `unexpected-failure`, never counted as prevented. Classes and
+  rationale: `redteam/README.md`. Result on the dev host (kernel 7.0.0-38): prevented by
+  V2 boundary 17, allowed inside granted authority 14, legitimate allowed 4, out-of-scope 1,
+  unexpected 0. All 14 V1 bypasses whose target is outside the workspace are prevented; the
+  10 V1 bypasses inside the workspace (deletes, `git reset --hard`, `.env` read/write,
+  control-plane copy) remain possible by design.
 
 `check-asan` now recursively invokes the same `check` suite list with binaries under
 `sandbox/build/asan`; it no longer deletes or replaces the normal build directory.

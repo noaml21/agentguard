@@ -1,11 +1,14 @@
 # Build State (resume pointer)
 
 - **Branch**: `v2/kernel-sandbox` (never merge to `main` without user approval).
-- **Current phase/unit**: Phase 11 (V1 vs V2 comparison) — next.
+- **Current phase/unit**: Phase 12 (CI tiers + README/release docs) — next.
+- **Phase 11 COMPLETE (2026-10-02)**: `redteam/run_v2.py` + `cases/expanded.json`;
+  36 cases → prevented 17, granted-authority 14, legitimate 4, out-of-scope 1,
+  unexpected 0. Artifacts `redteam/results/{v2_results.json,comparison.md}`.
 - **Phase 10 COMPLETE (2026-10-02)**: `sandbox/scripts/agentguard-agent` wrapper,
   `make -C sandbox install`, `tests/devworkflow_test.sh` (16). `make check` 226/226,
   `check-asan` 226/226 clean, V1 40/40 (also 40/40 inside the runner).
-- **Complete**: Phases 0–10. Phase 9 closed 2026-10-02 by classification under the PLAN gate
+- **Complete**: Phases 0–11. Phase 9 closed 2026-10-02 by classification under the PLAN gate
   and scope rule (BUILD_LOG "Session 4"): pathname AF_UNIX same-UID host services are
   **not isolated** (degraded, all modes, reported `host_ipc.isolation_enforced:false`);
   the Phase 6 session-bus escape is historical VERIFIED evidence, not re-executed at the
