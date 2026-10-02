@@ -521,3 +521,16 @@ Local gate before commit (dev host, kernel 7.0.0-38): `make -C sandbox all` warn
 unchanged (bypass=11, prevented=7, allowed-safe=2); `run_v2.py` 0 unexpected (artifacts
 differ only in the runner version); `git diff --check` clean; Markdown relative links
 validated.
+
+Committed/pushed `5a93443`. CI run 37016770396 on exactly `5a93443`: **success**, all four
+jobs. V2 check and check-asan on the runner: 220 passed, 6 delegated-cgroup cases skipped
+with reason (one SKIP line), 0 failed; Ctrl-C TTY case passed; redteam matrix identical to
+the committed artifact; V1 40/40 and corpus unchanged.
+
+Final review: (security) every README/report claim maps to THREAT_MODEL §4 rows or
+labelled residuals; host-IPC limit stated in README, status output, report, threat model.
+(developer) Phase 10 workflows and the wrapper pass; known incompatibilities listed.
+(reader) README leads with the two layers, quick start, demo, non-claims, evidence.
+(maintainer) docs index links every claim source; process files kept as history.
+**Phase 12 gate met (CI green with truthful skips; README complete). Phases 0–12
+COMPLETE; V2 release candidate `2.0.0-rc.1` verified.** Not merged, not tagged.

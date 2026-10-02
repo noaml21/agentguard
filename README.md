@@ -114,8 +114,8 @@ arrivals, process liveness), not just exit codes.
 |---|---|---|
 | V1 hook regression | `./tests/run_tests.sh` | 40/40 |
 | V1 red-team corpus | `python3 redteam/run_v1.py` | 20 cases: 7 prevented, 11 bypasses, 2 legitimate |
-| V2 integration (11 suites) | `make -C sandbox check` | 226/226 on the dev host |
-| V2 under ASan + UBSan (fatal) | `make -C sandbox check-asan` | 226/226, no reports |
+| V2 integration (11 suites) | `make -C sandbox check` | 226/226 on the dev host; CI: 220 passed + 6 delegated-cgroup cases skipped with reason |
+| V2 under ASan + UBSan (fatal) | `make -C sandbox check-asan` | 226/226, no reports (CI: same 220 + 6 skipped) |
 | V1 vs V2 comparison | `python3 redteam/run_v2.py` | 36 cases: **0 unexpected**; 17 prevented by the V2 boundary (every V1 bypass that targets something outside the workspace), 14 allowed inside granted workspace authority, 4 legitimate, 1 out of scope |
 
 Comparison matrix: [`redteam/results/comparison.md`](redteam/results/comparison.md).
