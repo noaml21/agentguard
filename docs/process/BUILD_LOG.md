@@ -403,3 +403,30 @@ shared default grants and explicit inherited authority remain classified limitat
 No scope removed, no Phase 10 work, no strict host-isolation guarantee. Exact next action:
 resume from BUILD_STATE and the inventory; separately authorize the real authority-path
 verification before attempting it, and satisfy the unchanged gate before advancing.
+
+## 2026-10-02 — Session 4: Phase 9 closure (classification decision, no code change)
+
+Reconciled: branch `v2/kernel-sandbox`, clean worktree, local HEAD = `origin/v2/kernel-sandbox`
+= `3be56ca`; no AgentGuard processes running. Session scope excluded the real session-bus /
+user-manager authority experiment and any contact with real host services.
+
+Re-read the PLAN Phase 9 gate: "Each surface is Core / non-goal / degraded, with fixture
+evidence." The previous session notes required a real D-Bus authority regression before
+closing; that is stricter than PLAN and is dropped as a closure condition. Applying the PLAN
+scope rule ("prefer weakening the claim"): pathname AF_UNIX host services are classified
+**degraded — not isolated** in all modes; V2 makes no complete same-UID host-service
+isolation claim; `host_ipc.isolation_enforced` stays false; `strict` means every required
+mechanism applied. The Phase 6 `systemd-run --user` escape stays recorded as historical
+VERIFIED evidence; it was **not** re-executed at the final head, and no mechanism added
+since mediates pathname AF_UNIX, so it is treated as still applicable. Users needing that
+isolation need a stronger boundary outside V2 Core (THREAT_MODEL §4.1, §5).
+
+Gate check against THREAT_MODEL §6: signals, abstract Unix, ptrace/process_vm, sensitive
+/proc, prlimit, scheduling, SysV, POSIX queues → Core with fixture evidence; pathname Unix,
+session-bus authority, netlink, `/dev/shm`, `/dev/pts` → degraded with fixture or historical
+evidence; `/proc/PID/status` metadata → non-goal; inherited fds → Core sanitation plus
+explicit delegation; writable shared files → intentional delegation. Every PLAN 9.2 surface
+(signals, ptrace, abstract/pathname unix sockets, inherited fds) is covered.
+**Phase 9 COMPLETE.** Docs updated: THREAT_MODEL (§4 row, §4.1, §5, §6), ARCHITECTURE,
+TEST_PLAN, WALKTHROUGH, BUILD_STATE. Verification for this docs-only unit at `3be56ca`
+code: listed in BUILD_STATE.

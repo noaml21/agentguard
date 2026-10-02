@@ -154,13 +154,16 @@ networking:
   warning; `none` is never silently downgraded.
 - Landlock TCP port rules (PLAN 6.2) are **not used** in Core: port-only TCP filtering
   without UDP coverage cannot express a truthful intermediate mode on ABI 8. Deferred.
-- **Residual (VERIFIED on the dev host, all modes):** AF_UNIX connections to same-UID host
-  services are not mediated (Landlock pathname-unix control needs ABI 9; the Phase 9
-  abstract-unix/signal scope does not cover pathname sockets). From inside `--net none`, `systemd-run --user` over the
-  session D-Bus socket started a process with `Seccomp: 0`, `NoNewPrivs: 0` and working
-  `AF_INET` sockets, i.e. **outside every AgentGuard layer**. Same-host services may also
-  relay traffic (e.g. systemd-resolved DNS). This is the Phase 9 host-IPC surface; until it
-  is closed, no V2 guarantee holds against an adversary that uses it.
+- **Residual (historical VERIFIED evidence on the dev host, all modes; accepted, outside
+  V2 Core):** pathname AF_UNIX connections to same-UID host services are not mediated
+  (Landlock pathname-unix control needs ABI 9; the Phase 9 abstract-unix/signal scope does
+  not cover pathname sockets). In Phase 6, from inside `--net none`, `systemd-run --user`
+  over the session D-Bus socket started a process with `Seccomp: 0`, `NoNewPrivs: 0` and
+  working `AF_INET` sockets, i.e. **outside every AgentGuard layer**. Same-host services
+  may also relay traffic (e.g. systemd-resolved DNS). Phase 9 closed by weakening the claim
+  (THREAT_MODEL §4.1): no V2 guarantee holds against an adversary that uses such a
+  service, and status reports `host_ipc.isolation_enforced:false`. The experiment was not
+  re-executed at the final Phase 9 head; no later mechanism mediates the path.
 
 `--status` (text and `--json`) reports the requested network mode and whether it is enforced.
 
@@ -279,7 +282,8 @@ SEQPACKET and socketpair-DGRAM traffic. It also breaks Python multiprocessing.Ma
 therefore it is not installed or exposed as a runtime mode. This is the canonical
 compatibility-preserving fallback: explicitly report the missing guarantee. Host-IPC
 isolation is false in status, including strict mode; help explains strict's limited
-meaning. No default scope or Phase 9 closure requirement has been removed.
+meaning. Phase 9 closed on this basis (PLAN scope rule: weaken the claim): pathname
+AF_UNIX host services are a documented, reported residual, not a Core guarantee.
 
 JSON adds `host_ipc` with `isolation_enforced:false`,
 `pathname_unix:"unrestricted"`, `sysv_denied` derived from effective seccomp state, and
@@ -293,7 +297,8 @@ The prior array held only 63 user keeps, closing the last one and refusing setup
 The memory/process, inherited-fd, SysV, socket and compatibility evidence is in
 `sandbox/tests/hostipc_extended_test.py`; surface classifications and remaining gaps are
 in THREAT_MODEL §6. In particular AF_NETLINK, default `/dev` reads and `/dev/pts` writes
-are not complete host-IPC isolation. The real session-D-Bus finding remains OPEN.
+are not complete host-IPC isolation. The historical session-D-Bus escape remains an
+accepted, reported residual (THREAT_MODEL §4.1); it was not re-executed at the final head.
 
 The continued inventory found that Landlock does not block same-UID scheduling setters.
 `prlimit64`'s pid-zero rule is now a shared five-instruction block used also for

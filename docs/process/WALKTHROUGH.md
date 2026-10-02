@@ -219,14 +219,15 @@ services, and datagram socketpairs can also send to a pathname socket. A test fi
 blocks both, but breaks Python multiprocessing.Manager. It is not enabled in normal
 runs. Instead status explicitly says **host IPC is not isolated**, even in strict mode.
 Strict means required mechanisms apply; it is not a promise that every host interaction
-is mediated. The real session-D-Bus escape is still OPEN and was not retested.
+is mediated. The session-D-Bus escape found in Phase 6 therefore still applies: it was
+not re-run at the end of Phase 9 (it talks to a real host service), and nothing added
+since mediates pathname sockets.
 
 Likewise, a kept socket is deliberately delegated authority: its peer receives data
 even though a non-kept socket would be closed. Default `/dev/shm` reads, `/dev/pts`
 writes and AF_NETLINK are additional shared host surfaces demonstrated with fresh
 fixtures. The host rejects the tested terminal-input ioctl even outside AgentGuard,
-so we credit that to host policy. These limitations are listed in THREAT_MODEL §6;
-they are not grounds to declare Phase 9 complete or start Phase 10.
+so we credit that to host policy. These limitations are listed in THREAT_MODEL §6.
 
 Scheduling was another independent path: a process can lower a same-UID neighbor's nice
 value or pin it to one CPU without ptrace or signals. The runner now restricts scheduling
@@ -236,3 +237,15 @@ nice/taskset/chrt/ionice command launches remain usable. Programs that adjust an
 thread by explicit TID are also denied, a limitation of this simple syscall filter.
 Separately, a fresh POSIX message-queue fixture confirms that the current Landlock policy
 denies opening it for send or receive. The outside queue still holds its original message.
+
+## How Phase 9 closed: weaken the claim, do not fake the mechanism
+
+The Phase 9 gate asks that every host-IPC surface be classified Core, non-goal or degraded,
+with fixture evidence — not that every surface be blocked. The project's scope rule says
+that when a mechanism is missing, either add its minimum version or weaken the claim, and
+prefer weakening. On this kernel there is no unprivileged mechanism that mediates pathname
+Unix sockets without breaking ordinary tools, so the claim was weakened: AgentGuard V2 does
+not isolate same-UID host services, every status report says so, and the threat model
+scopes every guarantee to an adversary that does not use such services. If you need that
+isolation, run the agent under a different user, in a VM, or in a container that has no
+access to your session's runtime directory — and still use AgentGuard inside it.

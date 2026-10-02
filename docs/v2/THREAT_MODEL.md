@@ -56,20 +56,30 @@ Every row below is subject to the **host-IPC residual** in §4.1.
 | Resource limits of outside same-UID processes | VERIFIED (seccomp: `prlimit64` only with pid 0; sentinel limits unchanged; self `ulimit`/`setrlimit` work; an explicit own pid is denied too) | only if seccomp applied | — |
 | Same-UID ptrace / process_vm / sensitive proc access | VERIFIED against an outside disposable sentinel: seccomp independently denies attach and process_vm read/write; Landlock independently denies those plus `/proc/PID/mem` read/write and reopening `/proc/PID/fd/N`. Positive controls succeed after the sentinel opts itself into tracing. Yama is not credited | without both Landlock domains, proc access succeeds; without seccomp, Landlock still protects the outside sentinel | — |
 | SysV shared memory, semaphore and message-queue access | IMPLEMENTED syscall deny-list; VERIFIED attach/write, semaphore SETVAL and message send denied, fixture state unchanged | VERIFIED effects succeed with seccomp omitted; status reports `sysv_denied:false` | — |
-| **Pathname AF_UNIX to same-UID host services (session D-Bus, `systemd --user`)** | **OPEN — VERIFIED ESCAPE** (§4.1). No Core mechanism applied; no guarantee in this table holds against a target that uses it | same | — |
+| **Pathname AF_UNIX to same-UID host services (session D-Bus, `systemd --user`)** | **NOT ISOLATED — accepted residual, outside V2 Core** (§4.1). Historical VERIFIED escape; no mechanism applied mediates pathname AF_UNIX; status reports `host_ipc.isolation_enforced:false`. No guarantee in this table holds against a target that uses such a service | same | — |
 
 ### 4.1 Known residuals (current)
 
-- **Same-UID host IPC escape — VERIFIED, all modes.** AF_UNIX connects to same-UID host
-  services are not mediated at Landlock ABI 8 (pathname-unix needs ABI 9). Abstract-unix
-  and signal scoping are applied since Phase 9 and do not cover pathname sockets. On the dev host, a process inside `--net none` asked the user
-  systemd manager (`systemd-run --user`, over `/run/user/1000/bus`) to start a process; that
-  process had `Seccomp: 0`, `NoNewPrivs: 0`, and could create `AF_INET` sockets — it is
-  outside every V2 layer. Same-host daemons can also relay traffic (e.g. DNS via
-  systemd-resolved). Until Phase 9 closes or explicitly scopes this, V2 guarantees hold only
-  against an adversary that does not use host IPC services. This includes the Phase 8
-  integrity rows: an unconfined process started this way can rewrite the policy file and
-  the runner binary.
+- **Same-UID host-service IPC — NOT ISOLATED, all modes (accepted residual, Phase 9
+  scope decision).** Pathname AF_UNIX connects to same-UID host services are not mediated
+  at Landlock ABI 8 (pathname-unix mediation needs ABI 9). Abstract-unix and signal scoping
+  (Phase 9) do not cover pathname sockets, and no mechanism enabled after the evidence
+  below mediates them. **Historical VERIFIED evidence (Phase 6, 2026-09-25, dev host):** a
+  process inside `--net none` asked the user systemd manager (`systemd-run --user`, over
+  `/run/user/1000/bus`) to start a process; that process had `Seccomp: 0`,
+  `NoNewPrivs: 0`, and could create `AF_INET` sockets — outside every V2 layer. That
+  experiment was deliberately **not re-executed** at the final Phase 9 head (it contacts a
+  real host service); since nothing added afterwards mediates the path, it is treated as
+  still applicable. Same-host daemons can also relay traffic (e.g. DNS via
+  systemd-resolved). **Scope of every V2 guarantee:** they hold against an adversary that
+  does not obtain authority from same-UID host services reachable over pathname AF_UNIX.
+  This includes the Phase 8 integrity rows: an unconfined process started this way can
+  rewrite the policy file and the runner binary. `strict` means every *required* V2
+  mechanism applied, not complete host isolation; status reports
+  `host_ipc.isolation_enforced:false` and `pathname_unix:"unrestricted"` in every mode.
+  Users who need complete same-UID host-service isolation need a stronger boundary outside
+  V2 Core (a separate UID without a user session, a VM, or a container with its own user
+  services and no access to the host's `$XDG_RUNTIME_DIR`).
 - **clone3**: flags are unfilterable (struct in user memory); mitigated by returning
   `ENOSYS` so callers fall back to the flag-filtered `clone()`. A program that *requires*
   clone3 (no fallback) fails; none observed (glibc, python, git, gcc tested).
@@ -102,12 +112,20 @@ Every row below is subject to the **host-IPC residual** in §4.1.
 - Network-namespace isolation (namespace tier unavailable on the dev host).
 - Guarantees that the active mode reports as unavailable or degraded.
 - Running as root.
+- Complete same-UID host isolation: pathname AF_UNIX services (session D-Bus,
+  `systemd --user`, agents/daemons listening in `$XDG_RUNTIME_DIR`), user-to-user netlink,
+  process metadata visibility, and shared default grants (`/tmp`, `/dev/shm` reads,
+  `/dev/pts`). See §4.1 and §6.
 
-## 6. Phase 9 surface inventory and decision (2026-09-27)
+## 6. Phase 9 surface inventory and decision (2026-09-27, closed 2026-10-02)
 
-Phase 9 remains **OPEN**. Classification below does not waive the real closure gate or
-authorize Phase 10. `strict` means required layers apply; it does **not** mean complete
-same-UID host isolation. Status now explicitly reports `host_ipc.isolation_enforced:false`
+Phase 9 is **COMPLETE** against its PLAN gate ("each surface is Core / non-goal /
+degraded, with fixture evidence"): every surface below carries one of those
+classifications and disposable-fixture evidence. Per the PLAN scope rule the claim was
+weakened rather than extended: pathname AF_UNIX host services are classified
+**not isolated / degraded** in all modes and V2 does not claim complete same-UID
+host-service isolation. `strict` means required layers apply; it does **not** mean complete
+same-UID host isolation. Status explicitly reports `host_ipc.isolation_enforced:false`
 in strict and degraded modes, and the text report says `NOT ISOLATED`.
 
 | Surface | Classification / mechanism | Disposable fixture evidence and limits |
@@ -118,8 +136,8 @@ in strict and degraded modes, and the text report says `NOT ISOLATED`.
 | `/proc/PID/status` metadata | Non-goal: process visibility is not PID namespace isolation | Fixture status remains readable. No claim that metadata, process names or PIDs are hidden |
 | prlimit on outside PIDs | Core: seccomp pid=0 only | Existing external limit-value oracle; explicit own PID also denied |
 | Outside scheduling / nice / I/O priority | Core: seccomp self-only setters | Slice 3: unconfined and disabled-seccomp arms change a private sentinel's nice, affinity, BATCH policy and I/O priority; protected arm leaves all values unchanged. Group selectors target only a sentinel's private process group. sched_setparam is denied too, but unprivileged priority 0 is a no-op, so that case is return-code evidence only |
-| Pathname Unix STREAM/DGRAM/SEQPACKET, including socketpair DGRAM sendto | **DEGRADED / OPEN**, all current modes | Fresh outside listeners receive fixture bytes in both net modes. Test-only socket/socketpair filter prevents every tested arrival; it is NOT installed by the runner |
-| Session D-Bus / user systemd authority | **OPEN — historical VERIFIED ESCAPE**, all modes | No interaction in this session. Synthetic pathname traffic is not a D-Bus authority regression and does not close §4.1. Real verification requires separate explicit authorization |
+| Pathname Unix STREAM/DGRAM/SEQPACKET, including socketpair DGRAM sendto | **DEGRADED — not isolated**, all modes; reported `pathname_unix:"unrestricted"` | Fresh outside listeners receive fixture bytes in both net modes. Test-only socket/socketpair filter prevents every tested arrival but breaks `multiprocessing.Manager`; it is NOT installed by the runner |
+| Session D-Bus / user systemd authority | **DEGRADED — not isolated; historical VERIFIED ESCAPE**, all modes; outside V2 Core (§4.1, §5) | Phase 6 experiment (2026-09-25) is the evidence; it was not re-executed at the final Phase 9 head by design, and no later mechanism mediates the path. Synthetic pathname fixtures above show the transport is still reachable |
 | Inherited Unix socket and pidfd | Core sanitation for non-kept fds; explicit delegation for stdio/keeps | Non-kept fds return EBADF and peer gets no data. `--keep-fd` socket transmits fixture bytes; kept pidfd cannot signal outside scope. All 64 explicit keeps now survive (off-by-one fixed) |
 | SysV IPC | Core deny via seccomp, DEGRADED without it | Fresh IPC_PRIVATE shm/sem/msg objects only; disabled-seccomp control mutates each, normal target gets EPERM and external bytes/value/queue contents stay unchanged. Creation/control/operation syscalls denied; shmdt remains allowed. SysV applications lose compatibility |
 | POSIX shared memory / mmap | **DEGRADED by filesystem grants**, not a separate IPC namespace | Fresh `/dev/shm` fixture is readable under default `/dev` read grant; writable open denied and bytes unchanged. No confidentiality claim for allowed read roots. Explicit write grants delegate shared-state authority |

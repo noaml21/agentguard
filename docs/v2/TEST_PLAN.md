@@ -131,8 +131,12 @@ evidence is the recorded local `make -C sandbox check` / `check-asan` runs on th
   Required kernel layers absent: extended suite skips with an explicit reason rather than
   presenting its fixtures as verified. All fixture commands use a fresh HOME, minimal
   environment and bounded execution; no real session bus or existing SysV ID is touched.
-  **Still OPEN:** real session-D-Bus authority regression requires separate explicit
-  authorization. The synthetic socket tests are not a substitute and do not close it.
+  **Phase 9 closure (2026-10-02):** the gate is classification + fixture evidence per
+  surface (THREAT_MODEL §6). The synthetic socket tests show pathname AF_UNIX transport is
+  still reachable; they are not a D-Bus authority test and are not presented as one. The
+  real session-D-Bus authority experiment is historical Phase 6 evidence and is
+  deliberately **not** part of any suite (it contacts a real host service). The residual is
+  accepted and reported (`host_ipc.isolation_enforced:false`), not claimed fixed.
 
 `check-asan` now recursively invokes the same `check` suite list with binaries under
 `sandbox/build/asan`; it no longer deletes or replaces the normal build directory.
