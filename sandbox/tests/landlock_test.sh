@@ -23,7 +23,11 @@ if [[ "$status_json" != *'"name":"landlock_fs","available":true'* ]]; then
 fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/agentguard-ll.XXXXXX")" || exit 1
-cleanup() { [[ "$TMP" == */agentguard-ll.* ]] && chmod -R u+rwx "$TMP" 2>/dev/null; [[ "$TMP" == */agentguard-ll.* ]] && rm -rf -- "$TMP"; }
+HOMEDIR=""
+cleanup() {
+    [[ "$TMP" == */agentguard-ll.* ]] && chmod -R u+rwx "$TMP" 2>/dev/null; [[ "$TMP" == */agentguard-ll.* ]] && rm -rf -- "$TMP"
+    [[ "$HOMEDIR" == */.agentguard-ll-home.* ]] && rm -rf -- "$HOMEDIR"
+}
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
@@ -95,9 +99,32 @@ ln -s "$OUT/secret" "$WS/swap"
 out="$(run sh -c 'cat swap 2>/dev/null' 2>/dev/null)"
 [[ "$out" != *"TOP_SECRET"* ]] && pass "deny read after path replaced by symlink" || fail "deny replaced path" "leaked"
 
-# --- Denied: reaching another repository / home area directly ---
-out="$(run sh -c 'ls /home/noam >/dev/null 2>&1 && echo LISTED || echo DENIED' 2>/dev/null)"
-[[ "$out" == "DENIED" ]] && pass "deny listing home directory" || fail "deny list home" "$out"
+# --- Denied: listing a directory in the home area ---
+# A fresh directory under $HOME, outside every root this policy grants. It must
+# be listable without the sandbox and fail with EACCES (not ENOENT) inside it,
+# so the denial cannot pass just because the path is missing on this host.
+HOMEDIR="$(mktemp -d "${HOME:-/nonexistent}/.agentguard-ll-home.XXXXXX" 2>/dev/null)" || HOMEDIR=""
+if [[ -z "$HOMEDIR" ]]; then
+    fail "deny listing home directory" "cannot create fixture under \$HOME (${HOME:-unset})"
+else
+    echo "home-marker" > "$HOMEDIR/home_marker"
+    LISTDIR='import os, sys
+try:
+    print("LISTED", " ".join(sorted(os.listdir(sys.argv[1]))))
+except PermissionError:
+    print("EACCES")
+except OSError as e:
+    print("ERRNO", e.errno)'
+    pre="$(python3 -c "$LISTDIR" "$HOMEDIR" 2>&1)"
+    out="$(run python3 -c "$LISTDIR" "$HOMEDIR" 2>&1)"
+    if [[ "$pre" != "LISTED home_marker" ]]; then
+        fail "deny listing home directory" "fixture not listable without sandbox: $pre"
+    elif [[ "$out" == "EACCES" ]]; then
+        pass "deny listing home directory"
+    else
+        fail "deny listing home directory" "$out"
+    fi
+fi
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [[ "$FAIL" -eq 0 ]]

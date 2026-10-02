@@ -26,5 +26,4 @@ Kept for traceability. Not needed to use or review the project.
 | Document | Contents |
 |---|---|
 | [v2/PLAN.md](v2/PLAN.md) | Fixed phase roadmap and completion gates (phases 0–12) |
-| [process/BUILD_LOG.md](process/BUILD_LOG.md) | Append-only evidence log, per session: measurements, bugs found, test counts |
-| [process/BUILD_STATE.md](process/BUILD_STATE.md) | Resume pointer: current commit, verification status, constraints |
+| [process/BUILD_LOG.md](process/BUILD_LOG.md) | Engineering log per phase: measurements, design decisions, bugs found, test counts, CI runs |

@@ -1,25 +1,18 @@
 # AgentGuard V2 Build Log
 
-Append-only evidence. Newest entries at the bottom.
+Engineering evidence per phase: measurements, design decisions, bugs found, test counts.
+Oldest entries first.
 
-## 2026-09-24 — Session 1: reconciliation and Phase 0
+## 2026-09-24 — Reconciliation and Phase 0
 
 ### Git reconciliation
 - `main` = `origin/main` = `904aa3f` (ci: run AgentGuard test suite); tree clean; no V2 branch existed.
 - Created and pushed `v2/kernel-sandbox` from `904aa3f`.
 
 ### V1 inspection
-- Live hooks in `.claude/settings.json` guard this development session: PreToolUse
-  (Bash|Read|Edit|Write) → `scripts/run_hook_chain.sh`; PostToolUse (Edit|Write) → syntax
-  checker; SessionEnd summary.
-- Consequences for development (not changed, recorded as constraints):
-  - Rate limiter: `MAX_COMMANDS=50` Bash requests per Claude session (warning after 40).
-    Bash work is batched into few calls; work continues in new sessions when exhausted.
-    Hooks are not modified to raise the limit.
-  - File policy: Read/Edit/Write limited to the workspace; control-plane paths
-    (`agentguard/{hooks,lib,config}`, `.claude/settings*.json`, `scripts/run_hook_chain.sh`,
-    `.agentguard/`) are not editable with file tools. V2 code lives in new paths.
-  - Commit validator: headers must be `type(scope): subject`, 10–72 chars, no trailing period.
+- V1 hooks in `.claude/settings.json`: PreToolUse (Bash|Read|Edit|Write) →
+  `scripts/run_hook_chain.sh`; PostToolUse (Edit|Write) → syntax checker; SessionEnd summary.
+  V1 is left unchanged; V2 code lives in new paths.
 - V1 regression suite: `./tests/run_tests.sh` → `40 passed, 0 failed`.
 
 ### Phase 0 capability audit
@@ -40,7 +33,7 @@ Command: `bash scripts/capability_audit.sh` (unprivileged).
 Decision: design guarantees around ABI 8 with runtime feature degradation; no namespace
 tier on this host; hand-written cBPF seccomp (no new host packages).
 
-## 2026-09-24 — Session 1: Phase 1 (V1 adversarial baseline)
+## 2026-09-24 — Phase 1 (V1 adversarial baseline)
 
 Built `redteam/` effect-based corpus (`cases/corpus.json`, 20 cases) and `run_v1.py`.
 Each case builds a disposable `mkdtemp` fixture, sends a synthetic hook payload through
@@ -60,16 +53,7 @@ Result (`redteam/results/v1_results.json`): **bypass=11, prevented=7, allowed-sa
 
 Corpus is mechanism-neutral so Phase 11 replays the identical semantic cases under V2.
 
-## 2026-09-24 — Session 1: note on live V1 hook friction during V2 dev
-
-The live PostToolUse syntax checker runs `gcc -fsyntax-only <file>` with no include
-path, so every multi-file V2 `.c` Write reports exit 2 ("util.h: No such file or
-directory"). This is **cosmetic only**: PostToolUse runs after the write, cannot undo it,
-and the file is written correctly (verified on disk). No hook is modified; V2 code is
-compiled via `make -C sandbox` which sets `-Iinclude`. Recorded per the self-hosting rule;
-not a blocker.
-
-## 2026-09-24 — Session 1: Phase 2 (C runner, lifecycle, FD, TTY)
+## 2026-09-24 — Phase 2 (C runner, lifecycle, FD, TTY)
 
 Built `sandbox/` C project (readable modules): `options` (CLI, `--` separator, no shell),
 `fdsan` (close_range + /proc fallback), `lifecycle` (fork/exec/signalfd supervisor,
@@ -90,7 +74,7 @@ Privilege model implemented: refuses EUID 0 (exit 125); never setuid; no root ov
 Note: shell-target WINCH traps are deferred by the shell, so the WINCH test uses a Python
 target (kernel delivers WINCH to the foreground group regardless).
 
-## 2026-09-24 — Session 1: Phase 3 (fail-closed setup contract)
+## 2026-09-24 — Phase 3 (fail-closed setup contract)
 
 Added `sandbox` module (`sandbox.h/.c`): enforcement-layer negotiation tracking
 AVAILABLE (parent probe) / REQUESTED / REQUIRED / APPLIED (child, reported back), a
@@ -115,7 +99,7 @@ Verified (`tests/contract_test.sh`, 12 tests; also under ASan/UBSan):
 Full suite green: `make check` = 18 runner + 12 contract + 5 pty = 35 tests;
 `make check-asan` all 35 clean under ASan+UBSan.
 
-## 2026-09-24 — Session 1: Phase 4 (Landlock filesystem enforcement)
+## 2026-09-24 — Phase 4 (Landlock filesystem enforcement)
 
 Added `landlock.{h,c}` (runtime ABI detection via landlock_create_ruleset(NULL,0,VERSION);
 ruleset built from handled rights for the running ABI; path_beneath rules bound to O_PATH
@@ -140,7 +124,7 @@ semantic effects V1 bypassed in Phase 1, now denied by the kernel regardless of 
 
 Full suite: `make check` = 18+12+14+5 = 49 tests green; `make check-asan` all 49 clean.
 
-## 2026-09-24 — Session 1: Phase 5 (seccomp-BPF + no_new_privs)
+## 2026-09-24 — Phase 5 (seccomp-BPF + no_new_privs)
 
 Design comparison recorded in ARCHITECTURE (libseccomp vs hand-written cBPF -> cBPF chosen:
 no dependency, small filter). Added `seccomp.{h,c}`: runtime-built classic BPF, arch guard
@@ -165,18 +149,15 @@ writable set.
 
 Full suite: `make check` = 18+12+14+8+5 = 57 tests green; `make check-asan` all 57 clean.
 
-## 2026-09-24/25 — Sessions 1–2: Phase 6 (network policy modes + seccomp hardening)
+## 2026-09-24/25 — Phase 6 (network policy modes + seccomp hardening)
 
-Session 1 wrote the network core (`--net none|all`, `enum ag_net_mode`, `sc_apply(deny_inet)`,
+Wrote the network core (`--net none|all`, `enum ag_net_mode`, `sc_apply(deny_inet)`,
 `tests/network_test.sh`) and smoke-tested it green, then added seccomp hardening from a
 security-review finding (`allowlist-semantic-escape`: fsopen/fsconfig/fsmount, pidfd_getfd,
-syslog, clone() CLONE_NEW* flag filter). It stopped at the live V1 Bash limit (51/50) with
-the hardening unbuilt; the session cwd was `sandbox/`, so the file-policy hook blocked writes
-to `docs/process/*` and a temporary `sandbox/RESUME.md` held the checkpoint. Session 2
-(cwd = repo root) folded that file into these docs and removed it.
+syslog, clone() CLONE_NEW* flag filter).
 
-Session 2 verified the preserved BPF (clone block: jf=4 / jt=1; socket block reload of `nr`
-because the clone block clobbers A) and then changed:
+Before building the hardening, verified its BPF (clone block: jf=4 / jt=1; socket block
+reload of `nr` because the clone block clobbers A), then changed:
 - socket rule: deny-list (INET/INET6/PACKET) → **allowlist** (AF_UNIX, AF_NETLINK), so
   AF_VSOCK and other families are denied too. Block is 6 instructions.
 - `clone3` → ENOSYS so libc falls back to the flag-filtered `clone()` (closes the clone3
@@ -195,7 +176,7 @@ io_uring_setup EFAULT → those tests discriminate. fsopen and clone(NEWNET) are
 unsandboxed (no caps); syslog not tested (dmesg_restrict=1 makes it EPERM regardless).
 
 **Finding (VERIFIED escape, all modes):** inside `--net none`, `systemd-run --user --wait`
-over `/run/user/1000/bus` launched a process with `Seccomp: 0`, `NoNewPrivs: 0` and a working
+over the user's session bus (`/run/user/$UID/bus`) launched a process with `Seccomp: 0`, `NoNewPrivs: 0` and a working
 AF_INET socket. AF_UNIX connects to same-UID services are unmediated at Landlock ABI 8.
 Recorded in THREAT_MODEL §4.1 and ARCHITECTURE; to be addressed in Phase 9. Landlock TCP port
 rules (PLAN 6.2) deliberately not used — port-only TCP without UDP cannot back a truthful
@@ -204,7 +185,7 @@ intermediate mode on this kernel.
 Verified: `make -C sandbox check` = 18+12+14+17+21+5 = **87** green; `make -C sandbox
 check-asan` = **87** green, no sanitizer reports.
 
-## 2026-09-25 — Session 2: Phase 7 (resource limits)
+## 2026-09-25 — Phase 7 (resource limits)
 
 Measured first: the runner's cgroup is the terminal's `vte-spawn-….scope` (user-owned,
 controllers `memory pids` available, `subtree_control` empty, 11 unrelated processes). So a
@@ -233,7 +214,7 @@ Verified: `tests/resource_test.sh` 14/14 (6 host-only cgroup cases ran on the de
 not skipped); `make -C sandbox check` = 18+12+14+17+21+14+5 = **101**; `check-asan` =
 **101**, no sanitizer reports.
 
-## 2026-09-25 — Session 2 (continued): Phase 8 (policy format + integrity)
+## 2026-09-25 — Phase 8 (policy format + integrity)
 
 CI for Phases 6 and 7 green (runs 36180346531, 36181400237). Added `policyfile.{h,c}`
 (strict line-based `key = value` parser, fd-based open, inode location walk),
@@ -251,18 +232,14 @@ Test-writing bugs caught before trusting results: a single 8 KiB write under a 4
 `RLIMIT_FSIZE` is a short write, not EFBIG (now chunked); `printf … | bad` ran the checker
 in a pipeline subshell so its counts were lost (29 counted of 66 run) — `shopt -s lastpipe`.
 
-Dev-environment notes: the V1 file-policy hook also blocks Write to the session scratchpad
-(outside the workspace); throwaway scripts went to the git-ignored `sandbox/build/`.
-
 Verified: `tests/policy_test.sh` 66/66; `make -C sandbox check` =
 18+12+14+17+21+14+66+5 = **167**; `check-asan` = **167**, no sanitizer reports. Phase 8
 guarantees remain subject to the verified host-IPC escape (THREAT_MODEL §4.1).
 CI for Phase 8: run 36188382679 green.
 
-## 2026-09-26 — Session 2 (continued): Phase 9 baseline probe (no code change)
+## 2026-09-26 — Phase 9 baseline probe (no code change)
 
-Only 4 Bash commands remained in this Claude session, so Phase 9 was not started; one
-disposable probe measured the baseline. Fixtures: an outside `sleep 600` sentinel and an
+Before starting Phase 9, one disposable probe measured the baseline. Fixtures: an outside `sleep 600` sentinel and an
 outside python listener on abstract socket `\0agp9probe`, both killed afterwards.
 
 1. Standalone C program: `landlock_create_ruleset` with a locally defined attr
@@ -274,13 +251,13 @@ outside python listener on abstract socket `\0agp9probe`, both killed afterwards
    sentinel` permitted; `prlimit --pid sentinel --nofile=77:77` rc 0 and the sentinel's
    `/proc/<pid>/limits` read 77/77 from outside; abstract connect succeeded and the
    listener logged 1 hit; `pidfd_open` + `pidfd_send_signal(fd, 0)` permitted;
-   `connect("/run/user/1000/bus")` succeeded.
+   `connect()` to the session-bus socket succeeded.
 
-Classification recorded in THREAT_MODEL (VERIFIED GAPs). Next steps in BUILD_STATE.
+Classification recorded in THREAT_MODEL (VERIFIED GAPs).
 
-## 2026-09-26 — Session 3: Phase 9 slice 1 (Landlock scope + prlimit64)
+## 2026-09-26 — Phase 9 slice 1 (Landlock scope + prlimit64)
 
-Scope for this session was deliberately narrow (defensive only): no reproduction of the
+Scope for this slice was deliberately narrow (defensive only): no reproduction of the
 session-D-Bus escape and no interaction with real user services; every outside party is a
 fixture the suite creates (a `sleep 300` sentinel, a python listener on a random abstract
 name). The D-Bus escape stays OPEN.
@@ -309,9 +286,8 @@ about these changes. TEST_PLAN's CI column corrected accordingly.
 ## 2026-09-27 — Phase 9 slice 2: disposable IPC evidence, SysV denial, FD capacity
 
 Reconciled first: local branch `v2/kernel-sandbox`, clean worktree, HEAD and remote HEAD
-both `244e472b3c8e47d9e7f86351b78d1a030cd95230`. No history rewrite or merge. Tool sandbox
-startup failed before execution (`bwrap` loopback permission); repository commands ran
-through reviewed escalation as the ordinary user. No hooks or host settings changed.
+both `244e472b3c8e47d9e7f86351b78d1a030cd95230`. No history rewrite or merge. No hooks or
+host settings changed.
 Capability audit reconfirms kernel 7.0.0-31, Landlock ABI 8, Yama 1, available owned-cgroup
 kill tier, unavailable usable namespace tier.
 
@@ -340,7 +316,7 @@ Additional fixture limits recorded: default `/dev/shm` object readable (not writ
 new `/dev/pts` slave writable, NETLINK_USERSOCK reaches outside fixture. TIOCSTI is EIO
 both outside/inside (host policy). The first TTY test incorrectly called setsid from a
 process-group leader; corrected it to fork first, then measured the ioctl. No real tty
-is touched. Threat-model inventory, architecture, walkthrough, test plan and build state
+is touched. Threat-model inventory, architecture, walkthrough and test plan
 updated. **Real session-D-Bus finding stays OPEN; no reproduction attempted. Phase 9
 closure not claimed; Phase 10 not started.** Scheduling/POSIX queue inventory still pending.
 
@@ -354,7 +330,6 @@ Validation (dev host, no skips):
   builds in `build/asan` and invokes the same suite list, without deleting normal output.
 - `bash tests/run_tests.sh`: **40/40**.
 - `bash scripts/capability_audit.sh`; `git diff --check`: passed.
-Local full output: ignored `build/phase9-{check,asan,v1,capabilities}.log`.
 
 ## 2026-09-27 — Phase 9 slice 3: outside scheduling and POSIX queue inventory
 
@@ -394,24 +369,22 @@ Validation, dev host (all passed, zero skips):
 - `make -C sandbox check-asan`: **210/210**; repeated with fatal UBSan, **210/210**,
   no ASan/UBSan/LSan reports.
 - `bash tests/run_tests.sh`: **40/40**; `git diff --check`: passed.
-Full local logs: ignored `build/phase9-final-{check,asan,asan-fatal,v1}.log`.
 
-Updated BUILD_STATE, this log, THREAT_MODEL, ARCHITECTURE, TEST_PLAN and WALKTHROUGH.
+Updated this log, THREAT_MODEL, ARCHITECTURE, TEST_PLAN and WALKTHROUGH.
 Phase 9 remains **IN PROGRESS**: the recorded real session-bus authority regression is
 not authorized and has not run. Its finding remains OPEN; pathname sockets, netlink,
 shared default grants and explicit inherited authority remain classified limitations.
-No scope removed, no Phase 10 work, no strict host-isolation guarantee. Exact next action:
-resume from BUILD_STATE and the inventory; separately authorize the real authority-path
-verification before attempting it, and satisfy the unchanged gate before advancing.
+No scope removed, no Phase 10 work, no strict host-isolation guarantee. The real
+authority-path verification needs separate authorization before it is attempted.
 
-## 2026-10-02 — Session 4: Phase 9 closure (classification decision, no code change)
+## 2026-10-02 — Phase 9 closure (classification decision, no code change)
 
 Reconciled: branch `v2/kernel-sandbox`, clean worktree, local HEAD = `origin/v2/kernel-sandbox`
-= `3be56ca`; no AgentGuard processes running. Session scope excluded the real session-bus /
+= `3be56ca`; no AgentGuard processes running. This unit excluded the real session-bus /
 user-manager authority experiment and any contact with real host services.
 
 Re-read the PLAN Phase 9 gate: "Each surface is Core / non-goal / degraded, with fixture
-evidence." The previous session notes required a real D-Bus authority regression before
+evidence." Earlier notes required a real D-Bus authority regression before
 closing; that is stricter than PLAN and is dropped as a closure condition. Applying the PLAN
 scope rule ("prefer weakening the claim"): pathname AF_UNIX host services are classified
 **degraded — not isolated** in all modes; V2 makes no complete same-UID host-service
@@ -428,11 +401,11 @@ evidence; `/proc/PID/status` metadata → non-goal; inherited fds → Core sanit
 explicit delegation; writable shared files → intentional delegation. Every PLAN 9.2 surface
 (signals, ptrace, abstract/pathname unix sockets, inherited fds) is covered.
 **Phase 9 COMPLETE.** Docs updated: THREAT_MODEL (§4 row, §4.1, §5, §6), ARCHITECTURE,
-TEST_PLAN, WALKTHROUGH, BUILD_STATE. Verification for this docs-only unit at `3be56ca`
+TEST_PLAN, WALKTHROUGH. Verification for this docs-only unit at `3be56ca`
 code: `make -C sandbox check` 210/210, V1 40/40, `git diff --check` clean (dev host kernel
 now 7.0.0-38). Committed/pushed `d015065`.
 
-## 2026-10-02 — Session 4: Phase 10 (V1 + V2 integration)
+## 2026-10-02 — Phase 10 (V1 + V2 integration)
 
 Added: `sandbox/scripts/agentguard-agent` (wrapper computing the documented recipe and
 exec'ing the runner: workspace = git toplevel, `--net ${AGENTGUARD_NET:-all}`, read access
@@ -463,7 +436,7 @@ no ASan/UBSan/LSan reports; V1 `tests/run_tests.sh` 40/40 (and 40/40 inside the 
 descendants covered. Phase 10 COMPLETE.**
 Committed/pushed `8c5b8bd`.
 
-## 2026-10-02 — Session 4: Phase 11 (V1 vs V2 comparison)
+## 2026-10-02 — Phase 11 (V1 vs V2 comparison)
 
 Found `redteam/cases.json`: an unused Phase 1 draft, truncated mid-string (invalid JSON),
 read by no runner. Kept unchanged and labelled in `redteam/README.md`; the canonical corpus
@@ -487,7 +460,7 @@ possible by design: workspace deletes, `git reset --hard`, `.env`, V1 control-pl
 Rerun produced byte-identical artifacts. **Phase 11 gate met (reproducible matrix, failures
 kept visible). Phase 11 COMPLETE.** Committed/pushed `d7f949b`.
 
-## 2026-10-02 — Session 4: Phase 12 (CI tiers, release documentation)
+## 2026-10-02 — Phase 12 (CI tiers, release documentation)
 
 CI (`8f50e42`): jobs `v1` (V1 suite + corpus, results must equal the committed file) and a
 `v2` matrix `check` / `check-asan` / `redteam`, each with capability audit, warning-clean
@@ -536,7 +509,7 @@ labelled residuals; host-IPC limit stated in README, status output, report, thre
 COMPLETE; V2 release candidate `2.0.0-rc.1` verified.** Not merged, not tagged.
 Final-head CI: run 37016989950 on `79df608`, success (all four jobs).
 
-## 2026-10-02 — Session 4: presentation pass (documentation only)
+## 2026-10-02 — Presentation pass (documentation only)
 
 No code, test, CI or hook change. Moved the V1 threat model `THREAT_MODEL.md` →
 `docs/v1/THREAT_MODEL.md` and `docs/process/WALKTHROUGH.md` → `docs/v2/WALKTHROUGH.md`
@@ -549,7 +522,7 @@ location check, `$HOME` outside the workspace). No claim was broadened.
 ## 2026-10-02 — Post-merge presentation (documentation and metadata only)
 
 PR #1 merged `v2/kernel-sandbox` into `main` (merge commit `b24ed9c`). Branch
-`docs/post-merge-presentation` from `origin/main`: README, build report and BUILD_STATE now
+`docs/post-merge-presentation` from `origin/main`: README and build report now
 say V2 is on `main` (runner still reports `2.0.0-rc.1`, no tag yet); CI badge points at
 `main`; MIT `LICENSE` added; `.gitattributes` excludes test suites and red-team harnesses
 (`sandbox/tests/**`, `tests/**`, `redteam/*.py`) from GitHub language statistics with

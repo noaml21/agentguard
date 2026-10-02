@@ -2,9 +2,8 @@
 
 Release status: merged into `main` on 2026-10-02 (PR #1, merge commit `b24ed9c`). The
 runner reports version `2.0.0-rc.1`; no tag or GitHub release has been created yet.
-Exact commits, local counts and CI runs for the verified head are in
-[`docs/process/BUILD_STATE.md`](../process/BUILD_STATE.md); per-session evidence is in
-[`BUILD_LOG.md`](../process/BUILD_LOG.md).
+Exact commits, local counts and CI runs per phase are in
+[`docs/process/BUILD_LOG.md`](../process/BUILD_LOG.md).
 
 ## Architecture
 
