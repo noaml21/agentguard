@@ -1,0 +1,10 @@
+# GitHub language statistics (linguist) only; no effect on git or the build.
+#
+# These paths are test suites and red-team evaluation harnesses, not product code.
+# They are excluded from the language bar with linguist-detectable=false: they are
+# neither third-party (linguist-vendored) nor documentation (linguist-documentation).
+# Product code stays counted: sandbox/src, sandbox/include, sandbox/probe (C), the V1
+# hooks, agentguard/lib, scripts/ and sandbox/scripts/agentguard-agent (Shell).
+sandbox/tests/** linguist-detectable=false
+tests/**         linguist-detectable=false
+redteam/*.py     linguist-detectable=false
