@@ -1,6 +1,6 @@
 # AgentGuard V2 Plan
 
-Fixed, ordered roadmap. Volatile progress lives only in `docs/process/BUILD_STATE.md`.
+Fixed, ordered roadmap.
 A phase is complete only when its gate is met and recorded in `docs/process/BUILD_LOG.md`.
 
 ## Core phases

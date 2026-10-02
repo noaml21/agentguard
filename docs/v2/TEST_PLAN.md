@@ -1,7 +1,8 @@
 # AgentGuard V2 Test Plan
 
-All tests run unprivileged, use disposable fixtures under a per-run temporary root,
-and never touch the real home directory, credentials, system files, or other repos.
+All tests run unprivileged and use disposable fixtures under a per-run temporary root
+(one Landlock case adds a fresh `mktemp` directory under `$HOME`, removed on exit). They
+never read or change existing home-directory files, credentials, system files, or other repos.
 Oracles check the real effect (file changed? connection made? process alive?), not
 just exit codes.
 
@@ -45,7 +46,8 @@ case runs only there).
   missing layers; no silent downgrade.
 - **Phase 4**: workspace write ok; outside write denied (direct, `..`, absolute,
   symlink, rename, path replacement after start, via python/perl/sh -c, via
-  grandchild); required reads permitted.
+  grandchild); listing a fresh directory under `$HOME`, first shown listable outside
+  the sandbox, fails with EACCES inside it; required reads permitted.
 - **Phase 5**: each denied syscall returns the documented errno; allowed ordinary work
   (compilers, git, python) succeeds; restrictions inherited by descendants.
 - **Phase 6** (`sandbox/tests/network_test.sh`, 21 cases; seccomp hardening in

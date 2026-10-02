@@ -100,7 +100,7 @@ Full list, per mode: [threat model](docs/v2/THREAT_MODEL.md).
 sandbox/    V2 runner (C), tests, agentguard-agent wrapper
 redteam/    effect-based attack corpus, V1/V2 drivers, committed results
 agentguard/ V1 hooks and policy;  scripts/  hook dispatcher, capability audit
-tests/      V1 test suite;        docs/     v2/ reference, v1/, process/ history
+tests/      V1 test suite;        docs/     v2/ reference, v1/, process/ build log
 ```
 
 ## License
