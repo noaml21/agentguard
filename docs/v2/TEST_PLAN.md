@@ -9,18 +9,27 @@ just exit codes.
 
 | Suite | Location | Needs | Runs in CI |
 |---|---|---|---|
-| V1 regression | `tests/run_tests.sh` | bash, jq, python3, gcc | yes |
-| V1 red-team corpus | `redteam/run_v1.py` | same | yes |
-| Runner unit/integration | `sandbox/tests/` via `make -C sandbox check` | gcc, python3 | **not yet** (Phase 12) |
-| Kernel-feature tests | same, tagged | Landlock ABI ≥ N, seccomp | **not yet** (Phase 12: skip with reason when the runner kernel lacks the feature) |
-| Host-only enhanced | same, tagged | namespaces / delegated cgroup | skip with reason in CI; never reported as verified when skipped |
-| Dev workflows + agent wrapper (Phase 10) | `sandbox/tests/devworkflow_test.sh` (part of `check`) | git, make, gcc, python3; node optional | **not yet** (Phase 12) |
-| Sanitizers | `make -C sandbox check-asan` | gcc ASan/UBSan | **not yet** (Phase 12) |
-| V2 red-team replay + V1 comparison | `redteam/run_v2.py` | built runner, bash, perl, git | **not yet** (Phase 12) |
+| V1 regression | `tests/run_tests.sh` | bash, jq, python3, gcc | yes (`v1` job) |
+| V1 red-team corpus | `redteam/run_v1.py` | same | yes; results must equal the committed `v1_results.json` |
+| Runner unit/integration + kernel-feature suites | `sandbox/tests/` via `make -C sandbox check` | gcc, make, python3; Landlock ABI ≥ 6, seccomp | yes (`V2 check`), gated by the kernel preflight |
+| Host-only (delegated cgroup kill) | same, tagged | writable delegated cgroup v2 | skips with reason on GitHub runners (6 cases); verified only on the dev host |
+| Dev workflows + agent wrapper (Phase 10) | `sandbox/tests/devworkflow_test.sh` (part of `check`) | git, make, gcc, python3; node optional | yes (inside `check`) |
+| Sanitizers | `make -C sandbox check-asan` | gcc ASan/UBSan (fatal UBSan) | yes (`V2 check-asan`); log grepped for sanitizer reports |
+| V2 red-team replay + V1 comparison | `redteam/run_v2.py --require-kernel` | built runner, bash, perl, git | yes (`V2 redteam`); per-case outcomes must equal the committed matrix |
 
-**CI today** (`.github/workflows/ci.yml`) runs only `tests/run_tests.sh` (the V1 suite) on
-`ubuntu-latest`. A green CI run is therefore **not** evidence for any V2 sandbox test; V2
-evidence is the recorded local `make -C sandbox check` / `check-asan` runs on the dev host.
+**CI** (`.github/workflows/ci.yml`, pinned `ubuntu-24.04`): job `v1`, then a `v2` matrix
+(`check`, `check-asan`, `redteam`). Each `v2` job prints `uname`, runs the unprivileged
+capability audit, builds warning-clean, then a **kernel-feature preflight** reads
+`agentguard-run --status --json`. If any *required* layer is unavailable, the tier step is
+skipped and the job emits a `::warning` plus a step-summary line naming the missing
+layers: the tier is then **not verified on that runner**, by construction never shown as
+passed tests. Suite-level skips (e.g. the cgroup host-only cases) are copied into the
+step summary. Measured on the first Phase 12 run (37015860344): runner kernel
+`6.17.0-1022-azure`, Landlock ABI 7 (scope available, pathname-unix and UDP not),
+`cgroup_kill` unavailable → resource suite 8 passed + 1 skip line covering 6 host-only
+cases. Dev host differences: kernel 7.0 / ABI 8, delegated cgroup available (all 6
+host-only cases run there), Claude Code installed (extended-suite Claude compatibility
+case runs only there).
 
 ## Required cases by phase
 

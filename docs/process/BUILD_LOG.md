@@ -485,4 +485,39 @@ out-of-scope 1, unexpected **0**. V1 over the same 36: bypass 24, prevented 8, a
 whose target is outside the workspace); V1 bypasses inside granted authority: 10 (stay
 possible by design: workspace deletes, `git reset --hard`, `.env`, V1 control-plane copy).
 Rerun produced byte-identical artifacts. **Phase 11 gate met (reproducible matrix, failures
-kept visible). Phase 11 COMPLETE.**
+kept visible). Phase 11 COMPLETE.** Committed/pushed `d7f949b`.
+
+## 2026-10-02 — Session 4: Phase 12 (CI tiers, release documentation)
+
+CI (`8f50e42`): jobs `v1` (V1 suite + corpus, results must equal the committed file) and a
+`v2` matrix `check` / `check-asan` / `redteam`, each with capability audit, warning-clean
+build and a kernel-feature preflight that skips the tier with a `::warning` and step-summary
+reason when a required layer is unavailable (never shown as passed). Redteam job compares
+per-case outcomes with the committed matrix (environment fields excluded).
+
+First run 37015860344: runner kernel `6.17.0-1022-azure`, Landlock ABI 7, all required
+layers available, `cgroup_kill` unavailable (6 host-only cases skip with reason). Green:
+`v1`, `check-asan`, `redteam` (matrix identical). **Failed:** `check` — tty_test "Ctrl-C
+reaches the target", output only the echoed `^C`, one 5 s timeout; the preceding
+foreground-group case passed. Not reproduced locally: 0/60 with every CPU busy. Hypothesis
+(not proven): race in the test *target*, `sh -c 'trap … INT; echo READY; sleep 10'` — a
+non-interactive shell defers its trap until the foreground child exits, and a SIGINT that
+lands in the forked child before `exec` is consumed there, so the shell waits the whole
+sleep. Fix in the test only (same approach the SIGWINCH case already used): a Python target
+whose SIGINT handler runs immediately. No runner change. ARCHITECTURE corrected: the
+supervisor forwards SIGINT it receives in all cases (doc said "when not on a TTY").
+
+Runner pinned to `ubuntu-24.04` (annotation: `ubuntu-latest` moves to a new release on
+2026-10-19). Version audit: only `main.c` (`0.2.0-phase2`), its test and the generated
+comparison artifacts carried a version → `2.0.0-rc.1` (release candidate: not merged or
+tagged; a final `2.0.0` belongs to the user-approved release step).
+
+Docs: README rewritten as a V2 landing page (two layers, quick start, real demo transcript,
+mechanisms, explicit non-claims, evidence, environment, links); new `docs/README.md` index;
+new `docs/v2/V2_BUILD_REPORT.md`; TEST_PLAN CI section rewritten with measured runner facts.
+
+Local gate before commit (dev host, kernel 7.0.0-38): `make -C sandbox all` warning-clean;
+`check` 226/226; `check-asan` 226/226, 0 sanitizer reports; V1 40/40; `run_v1.py`
+unchanged (bypass=11, prevented=7, allowed-safe=2); `run_v2.py` 0 unexpected (artifacts
+differ only in the runner version); `git diff --check` clean; Markdown relative links
+validated.

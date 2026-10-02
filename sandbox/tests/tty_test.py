@@ -104,10 +104,16 @@ def test_target_is_foreground():
 
 
 def test_ctrl_c_reaches_target():
-    # The target traps SIGINT and prints a marker. Sending 0x03 (Ctrl-C) on the
+    # The target handles SIGINT and prints a marker. Sending 0x03 (Ctrl-C) on the
     # pty must be delivered by the kernel to the foreground group (the target).
-    pid, master = run_in_pty([RUN, "--", SH, "-c",
-                              'trap "echo GOT_INT; exit 0" INT; echo READY; sleep 10'])
+    # A Python target, not `sh -c 'trap ... INT; sleep'`: a shell defers its trap
+    # until the foreground sleep exits, and a SIGINT landing in the forked child
+    # before exec is consumed there, so the shell waits the full sleep (one CI
+    # failure on a 6.17 runner, see BUILD_LOG Phase 12).
+    prog = ("import signal,sys,time;"
+            "signal.signal(signal.SIGINT, lambda *a:(print('GOT_INT',flush=True),sys.exit(0)));"
+            "print('READY',flush=True); time.sleep(10)")
+    pid, master = run_in_pty([RUN, "--", "python3", "-c", prog])
     read_until(master, b"READY")
     os.write(master, b"\x03")
     out = read_until(master, b"GOT_INT")

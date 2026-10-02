@@ -120,8 +120,9 @@ Installed **last** (after Landlock) so the filter never has to permit setup sysc
 ## Process lifecycle
 
 - Parent sets `PR_SET_CHILD_SUBREAPER` so orphaned descendants reparent to it.
-- Child runs in its own process group; parent forwards SIGTERM/SIGHUP/SIGQUIT (and
-  SIGINT when not on a TTY) to that group.
+- Child runs in its own process group; parent forwards SIGTERM/SIGHUP/SIGQUIT/SIGINT
+  and SIGWINCH it receives to that group (on a TTY, Ctrl-C reaches the foreground group
+  directly from the kernel).
 - On a TTY the child group is foreground: Ctrl-C and SIGWINCH go to it directly from
   the kernel; the parent restores the foreground group on exit.
 - After the main child exits: SIGTERM to the group, grace period, SIGKILL, then reap

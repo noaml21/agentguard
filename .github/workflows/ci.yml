@@ -17,7 +17,7 @@ env:
 jobs:
   v1:
     name: V1 regression + red-team corpus
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -41,7 +41,9 @@ jobs:
 
   v2:
     name: V2 ${{ matrix.tier }}
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moves to a new release in Oct 2026; capability claims
+    # below are for this image (kernel reported by the capability step).
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:

@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#define AGENTGUARD_RUN_VERSION "0.2.0-phase2"
+#define AGENTGUARD_RUN_VERSION "2.0.0-rc.1"
 
 int main(int argc, char **argv)
 {

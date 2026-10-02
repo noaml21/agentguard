@@ -1,148 +1,158 @@
 # AgentGuard
 
-AgentGuard is a runtime guardrail layer that reduces risk from AI coding agents performing local shell and file operations.
+[![CI](https://github.com/noaml21/agentguard/actions/workflows/ci.yml/badge.svg?branch=v2%2Fkernel-sandbox)](https://github.com/noaml21/agentguard/actions/workflows/ci.yml)
 
-AI coding agents can execute commands and modify files with the user's local privileges, so a plausible-looking request can damage a workspace, expose sensitive files, or leave code in a broken state. AgentGuard adds policy checks, pre-change recovery copies, bounded command counting, and audit visibility around selected tool operations. Claude Code is the first integration; AgentGuard is a guardrail layer, not a sandbox or isolation boundary.
+**Guardrails and a Linux kernel sandbox for AI coding agents.**
 
-## Why AgentGuard?
+Coding agents run shell commands and edit files with your privileges. AgentGuard puts
+two complementary layers around them:
 
-The difficult part is not any single check, but composing checks safely. A generated command may be destructive, a path may escape through `..` or a symlink, parallel hook handlers may violate required ordering, and concurrent state updates may lose counts. Some controls also operate after the fact: PostToolUse syntax validation can report a bad write, but cannot prevent or undo the write that already occurred.
+| Layer | What it is | Decides on | Good for |
+|---|---|---|---|
+| **V1 — workflow guardrails** | Claude Code hooks (`.claude/settings.json`) | the *text* of each tool request | early, explainable feedback; command and file policy; pre-change snapshots; commit policy; audit log |
+| **V2 — kernel enforcement** | `agentguard-run`, a small C launcher | the *effect* of every syscall of the agent and all its descendants | denying out-of-workspace file access, IP networking, and same-UID process interference, however the command is spelled |
 
-AgentGuard demonstrates defensive handling of these boundaries while keeping its guarantees explicit and testable.
+V1 is guidance for a cooperative agent and can be bypassed by re-spelling a command
+(the red-team corpus finds 11 such bypasses in 20 cases). V2 does not read commands at
+all: once a process is inside, the kernel refuses the effect.
 
-## Architecture
+Status: **V2 release candidate `2.0.0-rc.1`** on branch `v2/kernel-sandbox` (not yet
+merged or tagged). Linux only.
 
-```text
-Claude Code
-    |
-    v
-.claude/settings.json
-    |
-    +-- PreToolUse / PostToolUse
-    |       |
-    |       v
-    |   scripts/run_hook_chain.sh
-    |       |
-    |       +-- Bash:       firewall -> rate limiter -> commit policy
-    |       +-- Read:       file policy
-    |       +-- Edit/Write: file policy -> pre-change snapshot
-    |       +-- Post Edit/Write: syntax checker
-    |
-    +-- SessionEnd: session_end_summary.sh (direct)
+## Quick start
+
+```bash
+make -C sandbox                       # warning-clean build (-Wall -Wextra -Werror)
+make -C sandbox install               # agentguard-run + agentguard-agent -> ~/.local/bin
+
+agentguard-run --status               # what this kernel can enforce
+cd ~/src/myrepo
+agentguard-run -- bash                # a shell that can write only this directory, no network
+agentguard-run --net all --timeout 600 -- make test
+agentguard-agent -- claude            # Claude Code inside the sandbox (V1 hooks still run)
 ```
 
-The dispatcher runs each selected chain sequentially. Separate matching Claude hook handlers may otherwise run independently, but AgentGuard needs invariants such as firewall-before-rate-limit and file-policy-before-snapshot. This sequencing applies within one dispatched request; it does not globally serialize unrelated agent operations.
+What that looks like (real output, dev host, disposable directories, fake `HOME`):
 
-## Controls
+```text
+$ agentguard-run -- sh -c "echo ok > build.log && cat build.log"
+ok
+$ agentguard-run -- sh -c "cat ~/.ssh/id_demo"
+cat: /…/home/.ssh/id_demo: Permission denied
+$ agentguard-run -- python3 -c 'open("../escape", "w")'
+PermissionError: [Errno 13] Permission denied: '../escape'
+$ agentguard-run -- python3 -c 'import socket; socket.create_connection(("1.1.1.1", 443))'
+PermissionError: [Errno 13] Permission denied
+$ agentguard-run --status
+AgentGuard sandbox status (mode=strict)
+  layer            state        required
+  no_new_privs     requested    yes
+  cgroup_kill      requested    no
+  landlock_fs      requested    yes
+  landlock_scope   requested    yes
+  seccomp          requested    yes
+  network          none (socket() limited to AF_UNIX/AF_NETLINK via seccomp)
+  …
+  host IPC         NOT ISOLATED: pathname Unix sockets can reach unconfined host services
+  SysV IPC         denied via seccomp
+```
 
-| Control | Purpose |
+`agentguard-agent` is a ~40-line wrapper that spells out a recipe for coding agents: the
+enclosing git repository is the writable workspace, the agent's install directory is
+readable, its state files (`~/.claude`, `~/.claude.json`) are writable, and network is on
+(`AGENTGUARD_NET=none` turns it off). Everything else in `$HOME` stays unreadable.
+Policies can also live in a file (`--policy FILE`) that the sandboxed agent cannot modify.
+
+## How V2 works
+
+```text
+agentguard-run [options] -- COMMAND
+  |
+  +-- supervisor (unrestricted): load + validate policy, probe the kernel, fork,
+  |     forward signals, enforce the deadline, kill and reap the whole tree
+  |
+  +-- child: join owned cgroup -> close inherited fds -> rlimits -> no_new_privs
+        -> Landlock filesystem rules -> Landlock scope -> seccomp-BPF -> exec COMMAND
+           (any required step fails => the command never runs)
+              |
+              +-- claude -> V1 hooks, bash, git, gcc, python, node ... (all inherit V2)
+```
+
+| Mechanism | Effect |
 |---|---|
-| Command firewall | Blocks representative destructive Bash command strings using repository-owned extended regular expressions. Policy errors fail closed. |
-| File/workspace policy | Canonicalizes paths, enforces workspace containment, detects tested traversal and symlink escapes, protects named sensitive paths, and blocks Read/Edit/Write access to AgentGuard's control-plane paths. |
-| Rate limiter | Counts nonempty Bash requests per session. An exclusive `flock` protects validated read-modify-write state, which is replaced through a temporary file. |
-| Pre-change snapshots | Copies existing regular-file bytes before Edit/Write into path-hashed storage. Configuration bounds retained versions and separates same-basename paths. |
-| Commit policy | Uses Python `shlex` without command execution to validate supported static `git commit` messages against configured prefixes and formatting rules. |
-| Syntax checker | After Edit/Write, validates Bash with `bash -n`, Python with an artifact-free compilation check, and C with `gcc -fsyntax-only`. Unsupported types are skipped. |
-| Audit and SessionEnd summary | Appends structured JSONL events with decision context and emits a structured summary for the selected session. Both are local observability mechanisms. |
+| **Landlock filesystem** | Read/write only the workspace and explicit `--allow-write` paths; read-only system locations; `$HOME` invisible. Rules bind to inodes, so symlinks, `..`, hard links and renames cannot escape. |
+| **Landlock scope** (ABI ≥ 6) | No signals to, and no abstract-Unix connections into, processes outside the sandbox (including the supervisor). |
+| **seccomp-BPF** (hand-written, arch-checked) | Denies ptrace/process_vm, namespaces and mounts, bpf, perf, io_uring, kernel modules, SysV IPC, `pidfd_getfd`; `prlimit64` and scheduling setters only for the caller itself; `clone3` → `ENOSYS` so the flag-checked `clone` is used. |
+| **no_new_privs** | setuid/file capabilities cannot raise privilege. |
+| **Network modes** | `--net none` (default): only `AF_UNIX`/`AF_NETLINK` sockets can be created, so no TCP/UDP/raw IP. `--net all`: host networking. No destination filtering. |
+| **Resources and deadline** | Core dumps off; optional per-process file-size/open-file limits; `--timeout` tears down the tree; **opportunistic** `cgroup.kill` also catches `setsid` escapees when a delegated cgroup is available. |
+| **Strict policy + integrity** | Line-based `key = value` policy, every oddity an error; policy file and runner must be outside every writable root (checked by inode). |
+| **Fail-closed negotiation** | Each layer is reported available / requested / applied. Strict mode (default) refuses to run unless every required layer applies; `--degraded` runs and lists exactly what is missing. |
+| **Honest status** | `--status [--json]` reports layers, network enforcement, resources, and `host_ipc.isolation_enforced: false`. |
 
-Security-critical PreToolUse parsing, required policy, rate-state, and existing-file snapshot failures block with exit code 2. Audit writes and SessionEnd reporting are intentionally best-effort so an observability failure alone does not change an already established policy decision.
+## What V2 does not claim
 
-## Security Properties Tested
+- **Not a VM or container.** Same kernel, same UID, no namespaces on the measured hosts.
+- **No complete same-UID host-service isolation.** Pathname Unix sockets are not mediated
+  on the verified kernel ABI: a sandboxed process can still talk to host services such as
+  the session D-Bus, and was shown (historically) to ask the user's systemd to start an
+  unrestricted process. Status reports this in every mode. If you need that isolation, run
+  the agent as a separate user, in a VM, or in a container — and AgentGuard inside it.
+- **Nothing inside the workspace is protected.** Deleting files, `git reset --hard`,
+  reading a workspace `.env`, or editing V1 hook files there are allowed by design.
+- **No aggregate resource limits** (memory, process count) and **no destination-filtered
+  networking**.
 
-The repository contains **40 deterministic tests**. They use synthetic hook payloads, temporary workspaces, isolated `AGENTGUARD_STATE_DIR` directories, and temporary configuration copies; dangerous command strings are evaluated but never executed.
+Full list: [threat model](docs/v2/THREAT_MODEL.md) §4–6.
 
-Representative tested properties include:
+## Evidence
 
-- Destructive command patterns are blocked, including recursive deletion and destructive Git operations.
-- Workspace traversal, absolute outside paths, and symlink escapes are blocked.
-- `.env`, Git internals, AgentGuard control-plane files, runtime state, and Claude hook wiring are protected through file-tool policy.
-- A blocked dangerous command stops before rate-limit state is created.
-- A blocked protected Edit stops before snapshot creation.
-- Twenty simultaneous rate-limiter calls produce a final count of exactly 20.
-- Snapshots preserve exact pre-change bytes, avoid same-name collisions, and rotate to the configured bound.
-- Valid and invalid Bash, Python, and C are distinguished without Python cache or C build artifacts.
-- SessionEnd output counts only the selected session and remains non-blocking for malformed or absent audit data.
+All tests run unprivileged on disposable fixtures; oracles check real effects (bytes,
+arrivals, process liveness), not just exit codes.
 
-Run the suite from the repository root:
+| Suite | Command | Result |
+|---|---|---|
+| V1 hook regression | `./tests/run_tests.sh` | 40/40 |
+| V1 red-team corpus | `python3 redteam/run_v1.py` | 20 cases: 7 prevented, 11 bypasses, 2 legitimate |
+| V2 integration (11 suites) | `make -C sandbox check` | 226/226 on the dev host |
+| V2 under ASan + UBSan (fatal) | `make -C sandbox check-asan` | 226/226, no reports |
+| V1 vs V2 comparison | `python3 redteam/run_v2.py` | 36 cases: **0 unexpected**; 17 prevented by the V2 boundary (every V1 bypass that targets something outside the workspace), 14 allowed inside granted workspace authority, 4 legitimate, 1 out of scope |
 
-```bash
-./tests/run_tests.sh
-```
+Comparison matrix: [`redteam/results/comparison.md`](redteam/results/comparison.md).
+CI runs every tier on GitHub-hosted Ubuntu 24.04; kernel-dependent tiers run only when
+the runner provides every required layer and otherwise are reported as skipped, never
+as passed. Details: [test plan](docs/v2/TEST_PLAN.md).
 
-Expected current summary:
+**Supported environment.** Linux x86_64 (aarch64 compiles; untested). Strict mode needs
+Landlock ABI ≥ 6 (kernel ≥ 6.12) and seccomp; older kernels can use `--degraded` with
+the missing guarantees reported. Developed and verified on Ubuntu 24.04.5, kernel 7.0
+(Landlock ABI 8), GCC 13.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Architecture](docs/v2/ARCHITECTURE.md) — setup order, layers, network, resources, policy, V1/V2 integration
+- [Threat model](docs/v2/THREAT_MODEL.md) — guarantees per mode, residuals, non-goals, host-IPC inventory
+- [Test plan](docs/v2/TEST_PLAN.md) — every suite and what it proves
+- [Walkthrough](docs/process/WALKTHROUGH.md) — plain-language explanation of the mechanisms
+- [V2 build report](docs/v2/V2_BUILD_REPORT.md) — release-candidate summary
+- [V1 threat model](THREAT_MODEL.md) — the hook layer's boundaries
+
+## Repository layout
 
 ```text
-40 passed, 0 failed
+sandbox/            V2: agentguard-run (C, src/ include/), tests/, scripts/agentguard-agent
+redteam/            effect-based corpus, V1 and V2 drivers, committed results
+agentguard/         V1 hooks, shared library, policy configuration
+scripts/            V1 hook dispatcher, capability audit
+tests/run_tests.sh  V1 regression suite
+docs/               architecture, threat model, test plan, process log
 ```
 
-## Example
+## V1 hooks in brief
 
-This simplified example uses the production diagnostic prefix; it is not a live Claude Code transcript:
-
-```text
-Bash request: rm -rf /tmp/project
-Result: exit 2
-stderr: AgentGuard firewall: BLOCKED by policy pattern: <matched rule>
-
-Bash request: git status
-Result: exit 0
-```
-
-## Repository Layout
-
-```text
-.claude/settings.json          Claude Code project hook wiring
-agentguard/
-  hooks/                       Runtime policy and lifecycle hooks
-  lib/                         Shared Bash helpers
-  config/                      Repository-owned policies and limits
-scripts/run_hook_chain.sh      Sequential PreToolUse/PostToolUse dispatcher
-tests/run_tests.sh             Independent deterministic test suite
-THREAT_MODEL.md                Detailed assets, boundaries, and residual risks
-```
-
-## Requirements
-
-AgentGuard targets Linux and Bash. The implementation and tests require:
-
-- Bash
-- `jq`
-- `flock`
-- GNU `realpath`
-- `sha256sum`
-- Python 3
-- GCC
-- Git
-
-Claude Code is required only to use the Claude integration. It is not required to run the repository test suite.
-
-## Running the Tests
-
-From the repository root:
-
-```bash
-./tests/run_tests.sh
-```
-
-The harness exits 0 only when every test passes. It creates one temporary root with per-test workspaces and state, uses isolated project copies for configuration variants, and removes temporary data through a trap.
-
-## Claude Code Integration
-
-Project hook wiring is present in `.claude/settings.json` and uses `${CLAUDE_PROJECT_DIR}` for portable command paths. PreToolUse and PostToolUse requests are sent through the sequential dispatcher, while SessionEnd invokes the summary hook directly.
-
-The wiring targets Claude Code's documented hook interface and is covered by synthetic payload and dispatcher integration tests. A live authenticated Claude Code session has not yet been used as part of validation.
-
-## Security Model and Limitations
-
-AgentGuard reduces risk; it does not contain an agent. The command firewall is regex-based and bypassable through obfuscation or unsupported forms. Canonical path validation has a time-of-check/time-of-use window, and an otherwise allowed Bash command can bypass Read/Edit/Write file policy. Snapshots are recovery copies rather than transactional rollback. PostToolUse syntax checks detect errors after modification and do not establish semantic correctness or security. Audit logs are local, best-effort, and not tamper-evident against an OS-level attacker.
-
-See [THREAT_MODEL.md](THREAT_MODEL.md) for the complete trust boundaries, mitigations, non-goals, and residual risks.
-
-## Design Highlights
-
-- Deterministic, fail-closed ordering for security-critical hook chains.
-- Canonical path containment with explicit control-plane protection.
-- `flock`-protected state updates and same-directory temporary replacement.
-- Path-hashed, bounded pre-change snapshots.
-- Structured JSONL audit events with best-effort session reporting.
-- Independent integration tests with no Claude Code authentication dependency.
+Claude Code sends PreToolUse/PostToolUse requests through `scripts/run_hook_chain.sh`,
+which runs a fixed, fail-closed chain: command firewall → rate limiter → commit policy
+for Bash; file/workspace policy → pre-change snapshot for Edit/Write; a syntax check
+after writes; a SessionEnd summary from the JSONL audit log. Requirements: bash, jq,
+flock, GNU coreutils, Python 3, GCC, Git. See [THREAT_MODEL.md](THREAT_MODEL.md).

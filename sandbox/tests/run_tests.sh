@@ -45,7 +45,7 @@ out="$("$RUN" -- printf '[%s]' 'a b' '$HOME' '*')"
 assert_eq "argv preserved verbatim (no shell)" '[a b][$HOME][*]' "$out"
 
 # --- version/help ---
-out="$("$RUN" --version)"; assert_eq "version prints" "agentguard-run 0.2.0-phase2" "$out"
+out="$("$RUN" --version)"; assert_eq "version prints" "agentguard-run 2.0.0-rc.1" "$out"
 
 # --- root refusal is documented behavior (only checkable when not root) ---
 if [[ "$(id -u)" -ne 0 ]]; then

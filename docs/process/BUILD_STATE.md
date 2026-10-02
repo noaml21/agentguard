@@ -1,7 +1,8 @@
 # Build State (resume pointer)
 
 - **Branch**: `v2/kernel-sandbox` (never merge to `main` without user approval).
-- **Current phase/unit**: Phase 12 (CI tiers + README/release docs) — next.
+- **Current phase/unit**: Phase 12 (CI tiers + README/release docs) — implemented and
+  verified locally; awaiting exact-SHA CI (see BUILD_LOG Phase 12).
 - **Phase 11 COMPLETE (2026-10-02)**: `redteam/run_v2.py` + `cases/expanded.json`;
   36 cases → prevented 17, granted-authority 14, legitimate 4, out-of-scope 1,
   unexpected 0. Artifacts `redteam/results/{v2_results.json,comparison.md}`.
