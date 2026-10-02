@@ -1,0 +1,189 @@
+# AgentGuard V2 Test Plan
+
+All tests run unprivileged, use disposable fixtures under a per-run temporary root,
+and never touch the real home directory, credentials, system files, or other repos.
+Oracles check the real effect (file changed? connection made? process alive?), not
+just exit codes.
+
+## Suites
+
+| Suite | Location | Needs | Runs in CI |
+|---|---|---|---|
+| V1 regression | `tests/run_tests.sh` | bash, jq, python3, gcc | yes (`v1` job) |
+| V1 red-team corpus | `redteam/run_v1.py` | same | yes; results must equal the committed `v1_results.json` |
+| Runner unit/integration + kernel-feature suites | `sandbox/tests/` via `make -C sandbox check` | gcc, make, python3; Landlock ABI ≥ 6, seccomp | yes (`V2 check`), gated by the kernel preflight |
+| Host-only (delegated cgroup kill) | same, tagged | writable delegated cgroup v2 | skips with reason on GitHub runners (6 cases); verified only on the dev host |
+| Dev workflows + agent wrapper (Phase 10) | `sandbox/tests/devworkflow_test.sh` (part of `check`) | git, make, gcc, python3; node optional | yes (inside `check`) |
+| Sanitizers | `make -C sandbox check-asan` | gcc ASan/UBSan (fatal UBSan) | yes (`V2 check-asan`); log grepped for sanitizer reports |
+| V2 red-team replay + V1 comparison | `redteam/run_v2.py --require-kernel` | built runner, bash, perl, git | yes (`V2 redteam`); per-case outcomes must equal the committed matrix |
+
+**CI** (`.github/workflows/ci.yml`, pinned `ubuntu-24.04`): job `v1`, then a `v2` matrix
+(`check`, `check-asan`, `redteam`). Each `v2` job prints `uname`, runs the unprivileged
+capability audit, builds warning-clean, then a **kernel-feature preflight** reads
+`agentguard-run --status --json`. If any *required* layer is unavailable, the tier step is
+skipped and the job emits a `::warning` plus a step-summary line naming the missing
+layers: the tier is then **not verified on that runner**, by construction never shown as
+passed tests. Suite-level skips (e.g. the cgroup host-only cases) are copied into the
+step summary. Measured on the first Phase 12 run (37015860344): runner kernel
+`6.17.0-1022-azure`, Landlock ABI 7 (scope available, pathname-unix and UDP not),
+`cgroup_kill` unavailable → resource suite 8 passed + 1 skip line covering 6 host-only
+cases. Dev host differences: kernel 7.0 / ABI 8, delegated cgroup available (all 6
+host-only cases run there), Claude Code installed (extended-suite Claude compatibility
+case runs only there).
+
+## Required cases by phase
+
+- **Phase 2**: exit-status propagation (0, N, signal → 128+N); argv preserved exactly
+  (spaces, globs, empty args); no shell involved; EUID 0 refused; inherited file, pipe,
+  TCP socket, unix socket fds are closed in the target; stdio preserved; SIGTERM to
+  runner terminates tree; timeout kills tree only; orphaned grandchildren reaped;
+  unrelated process survives; repeated runs leak no processes; child crash reported.
+- **Phase 2 TTY** (pty-driven via python `pty`): target sees a TTY, is foreground,
+  Ctrl-C reaches it, SIGWINCH/resize reaches it, runner restores foreground.
+- **Phase 3**: available+applied; required-but-unavailable refuses (target marker
+  file never created); available-but-setup-fails refuses; explicit degraded run lists
+  missing layers; no silent downgrade.
+- **Phase 4**: workspace write ok; outside write denied (direct, `..`, absolute,
+  symlink, rename, path replacement after start, via python/perl/sh -c, via
+  grandchild); required reads permitted.
+- **Phase 5**: each denied syscall returns the documented errno; allowed ordinary work
+  (compilers, git, python) succeeds; restrictions inherited by descendants.
+- **Phase 6** (`sandbox/tests/network_test.sh`, 21 cases; seccomp hardening in
+  `seccomp_test.sh`): loopback TCP+UDP listeners on 127.0.0.1 and ::1 run *outside* the
+  sandbox and log every accepted connection/datagram. `none`: IPv4/IPv6 TCP connect and UDP
+  send fail with EACCES; raw IP, AF_PACKET, AF_VSOCK denied; bash `/dev/tcp` and a descendant
+  denied; default is `none`; the listeners' log stays **empty** (effect oracle); AF_UNIX
+  socketpair + pathname socket round trip works. `all`: IPv4 TCP/UDP and IPv6 TCP arrive at
+  the listeners; descendant connects; AF_UNIX works. Contract: status JSON reports mode and
+  `enforced`; strict + seccomp unavailable refuses (125); degraded reports `enforced:false`
+  and warns; invalid `--net` value rejected. IPv6 cases skip with a reason if `::1` is absent.
+  Seccomp hardening: clone(CLONE_NEWUSER|CLONE_NEWNET) EPERM, clone3 ENOSYS, fsopen,
+  pidfd_getfd, io_uring_setup EPERM; fork+pthread, python threads+subprocess, git
+  init/add/commit still work. Discrimination baseline (same helper, unsandboxed, dev host):
+  clone(NEWUSER) and clone3 **succeed**, pidfd_getfd → EBADF, io_uring_setup → EFAULT; fsopen
+  and clone(NEWNET) are EPERM even unsandboxed (not independently proven there).
+- **Phase 7** (`sandbox/tests/resource_test.sh`, 14 cases on the dev host): core soft+hard
+  0 in a descendant and cannot be raised; `--max-file-size` makes a python write fail
+  EFBIG and a shell writer stop, file capped exactly at the bound; large writes work
+  without the flag; `--max-open-files` gives EMFILE below the bound and a gcc workflow still
+  works at 64; bad values rejected; status JSON reports resources. **Host-only**
+  (skip with reason when `cgroup_kill` is unavailable, never counted as verified): target
+  and descendant are in `agentguard-run.<pid>`; target cannot write itself back to the
+  parent cgroup; a setsid escapee **survives** with the layer disabled
+  (`AGENTGUARD_TEST_UNAVAIL=cgroup_kill`) and **dies** with it enabled (discrimination);
+  timeout exits 124 and kills the escapee; an unrelated process survives; the parent
+  cgroup's child list and `subtree_control` are identical before/after. The escapee
+  fixture waits until the escapee is in its own session: without that wait the ordinary
+  group teardown kills it and the case proves nothing (bug found while writing the test).
+- **Phase 8** (`sandbox/tests/policy_test.sh`, 66 cases): valid minimal and full policies
+  (comments, blank lines, a read path with spaces) with effects checked (workspace write,
+  read through the spaced path, EFBIG at the policy's file-size bound, status JSON). No-merge
+  precedence: `--policy` plus each covered CLI flag (and a second `--policy`) exits 125 and
+  never runs the target; `--verbose`/`--degraded` combine. 37 malformed inputs (unknown and
+  duplicate keys, missing or late version, missing workspace, empty file, bad separators,
+  leading/trailing space, empty value, bad enum/boolean/timeout incl. `1e3`/`nan`, negative,
+  overflow, out-of-range, relative/`..`/`//`/trailing-slash paths, writable `/`, tab, CRLF,
+  NUL, non-ASCII, >64 KiB, >1024 lines, over-long line, >64 paths, duplicate/contradictory
+  paths): each exits 125, the target's marker file never appears, the error mentions the
+  policy, and the invalid value (`SECRET123`) is not echoed. Location: refused inside the
+  workspace, under default-writable `/tmp`, inside a `write` root, via a symlink, via a
+  symlinked directory, via `.` and relative spellings, group-writable, directory, missing.
+  The same `/tmp` location is accepted when the policy disables default writes
+  (discrimination: the check follows the effective roots). Integrity: a sandboxed script
+  tries 17 write/replace spellings (redirect, truncate, append, mv, rm, symlink, rename-over,
+  cp-over, hard link + write, python write/rename/truncate/unlink/symlink, grandchild,
+  `./` and `../` spellings, create in the control dir) on the policy and a runner copy; the
+  sha256, inode, size and directory listing are unchanged, the next run works, and the
+  runner copy still executes. A runner copy inside the workspace is refused in policy mode
+  and reported in CLI mode. CLI `--timeout nan` is rejected (shared parser).
+- **Phase 9** (`sandbox/tests/hostipc_test.sh`, 27 cases on the dev host; first slice).
+  Fixtures are created by the suite only: an outside `sleep` sentinel and an outside python
+  listener on a random abstract name that logs every accept. **Scope** (skip with reason
+  when `landlock_scope` is unavailable): `kill -0` and SIGTERM to the sentinel fail and it
+  stays alive; `pidfd_open` works but `pidfd_send_signal` is EPERM; a grandchild is also
+  denied; the target cannot signal its supervisor; signalling its own child works (143).
+  Abstract: outside control connection is logged (the fixture works); the sandbox and a
+  descendant get EPERM and the listener logs 0 hits; listener+client inside one sandbox
+  work. **Compat**: socketpair stream round trip, python asyncio subprocess, python
+  threads+subprocess, gcc, git init/add/commit, node `child_process` execSync+spawnSync.
+  **prlimit64** (seccomp): `prlimit --pid`, python `resource.prlimit(pid)` and a descendant
+  cannot change the sentinel (its `/proc/<pid>/limits` read outside is unchanged); shell
+  `ulimit`, python `setrlimit`/`getrlimit` and `prlimit(0, …)` still work. Discrimination:
+  before the rule the same three cases changed the sentinel to 77/66/55. **Contract**:
+  strict refuses (125, target not run) when the layer is unavailable or fails to apply;
+  degraded status shows `missing`, and a degraded run can reach the sentinel with `kill -0`
+  (the lost guarantee is real and reported).
+- **Phase 9 extended** (`sandbox/tests/hostipc_extended_test.py`, 16 test methods,
+  with operation/mode subtests; do not count subtests as additional top-level tests):
+  outside sentinel memory read/write/attach and proc-fd reopen, independently testing
+  Landlock and seccomp; inherited Unix/pidfd closure versus explicit delegation; the full
+  64-fd boundary; outside pathname STREAM/DGRAM/SEQPACKET and socketpair-DGRAM traffic
+  under both network modes versus a test-only denial candidate; owned IPC_PRIVATE
+  shm/sem/msg effects with seccomp enabled/disabled; honest status in strict/degraded
+  and unavailable-seccomp cases. Baseline sentinel explicitly permits tracing, so
+  denials are not attributed to Yama. Effects are bytes, semaphore values, queue contents,
+  socket arrivals and unchanged outside memory, not just syscall return values.
+  Compatibility: candidate filter preserves gcc/git/Node, `claude --version`, asyncio,
+  socketpair streams and pipe-based multiprocessing, but breaks multiprocessing.Manager
+  (normal runner succeeds). NSS localhost lookup and best-effort syslog return under the
+  candidate; socket creation denial prevents reaching real nscd/syslog services. No live
+  Claude/API session is tested. Missing Claude skips explicitly.
+  Further fixture classifications: `/dev/shm` object readable but not writable by default;
+  new pty slave writable through default `/dev/pts`; TIOCSTI baseline/sandbox both EIO on
+  dev host (host policy); NETLINK_USERSOCK reaches a fresh outside fixture port.
+  Scheduling: private sentinel processes/groups, outside snapshots of nice/affinity/
+  scheduling policy/priority/I/O priority; baseline and omitted-seccomp controls permit
+  changes, normal runs deny them; self APIs and nice/taskset/chrt/ionice launches work.
+  sched_setparam priority zero is a no-op even in baseline and is not effect-discriminating;
+  an affinity test on a one-CPU cpuset similarly cannot demonstrate a change.
+  POSIX message queue: exclusive fresh name, baseline send/receive effects, Landlock
+  denials with queue contents preserved, independent omitted-layer controls.
+  Required kernel layers absent: extended suite skips with an explicit reason rather than
+  presenting its fixtures as verified. All fixture commands use a fresh HOME, minimal
+  environment and bounded execution; no real session bus or existing SysV ID is touched.
+  **Phase 9 closure (2026-10-02):** the gate is classification + fixture evidence per
+  surface (THREAT_MODEL §6). The synthetic socket tests show pathname AF_UNIX transport is
+  still reachable; they are not a D-Bus authority test and are not presented as one. The
+  real session-D-Bus authority experiment is historical Phase 6 evidence and is
+  deliberately **not** part of any suite (it contacts a real host service). The residual is
+  accepted and reported (`host_ipc.isolation_enforced:false`), not claimed fixed.
+
+- **Phase 10** (`sandbox/tests/devworkflow_test.sh`, 16 cases). Disposable root under
+  `sandbox/build/` — deliberately **not** `/tmp`, which the default policy grants writable,
+  so "outside" fixtures are outside every default root — with a fake `HOME` holding a
+  fixture `~/.ssh` key, `~/.claude/` and `~/.claude.json`. Default policy (what users get):
+  shell pipes/redirects/symlinks; git init/add/commit, `status --porcelain`, `diff`,
+  branch/switch/fast-forward merge in a disposable repo; `make` + `gcc` multi-file build
+  writing objects in the workspace and running the result; python file write +
+  subprocess + asyncio subprocess; node `child_process` exec/spawn (skip if node absent).
+  Descendant restrictions: a `make` recipe, a python→sh grandchild, a node child and a git
+  `pre-commit` hook (spawned by git) all fail to read/write the outside fixture while the
+  surrounding workflow succeeds; `$HOME` is neither readable nor listable. Wrapper: a
+  fixture agent installed in a non-default directory starts through `agentguard-agent`,
+  edits the repo, writes `~/.claude/` and `~/.claude.json`, runs git, and is denied
+  `~/.ssh` and the outside fixture; a missing agent exits 127; `--status` through the
+  wrapper shows `--net all` and `host_ipc.isolation_enforced:false`. V1 integration: the
+  V1 suite `tests/run_tests.sh` runs unchanged inside the runner (40/40). Terminal/TTY and
+  cancellation/deadline behavior are already covered by `tty_test.py` and Phase 2/7 tests,
+  not duplicated. Manual evidence (not in the suite, needs Claude Code installed):
+  `agentguard-agent -- claude --version` with `AGENTGUARD_NET=none` printed the version on
+  the dev host; no authenticated Claude session is part of any test.
+
+- **Phase 11** (`redteam/run_v2.py`; artifacts `redteam/results/v2_results.json`,
+  `redteam/results/comparison.md`). 36 cases: the 20 unchanged Phase 1 cases plus 16 in
+  `cases/expanded.json` (outside-target spellings — long options, variable command name,
+  reversed payload piped to bash, perl, python, truncate, computed absolute path, xargs,
+  workspace script — symlink write, hard-link write and read, rename out of the
+  workspace; a V1 control-plane copy inside the workspace; two legitimate workflows).
+  Each case gets a baseline control without a sandbox; a case whose baseline does not
+  reproduce is reported `unexpected-failure`, never counted as prevented. Classes and
+  rationale: `redteam/README.md`. Result on the dev host (kernel 7.0.0-38): prevented by
+  V2 boundary 17, allowed inside granted authority 14, legitimate allowed 4, out-of-scope 1,
+  unexpected 0. All 14 V1 bypasses whose target is outside the workspace are prevented; the
+  10 V1 bypasses inside the workspace (deletes, `git reset --hard`, `.env` read/write,
+  control-plane copy) remain possible by design.
+
+`check-asan` now recursively invokes the same `check` suite list with binaries under
+`sandbox/build/asan`; it no longer deletes or replaces the normal build directory.
+UBSan uses `halt_on_error=1:print_stacktrace=1`, propagated through the extended suite's
+isolated environment, so a captured diagnostic cannot silently pass with exit status zero.

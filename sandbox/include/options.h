@@ -1,0 +1,52 @@
+/* Command-line parsing for agentguard-run.
+ *
+ * Usage: agentguard-run [options] -- command [args...]
+ * The target argv after "--" is passed to execvp unchanged; no shell is used.
+ */
+#ifndef AGENTGUARD_OPTIONS_H
+#define AGENTGUARD_OPTIONS_H
+
+#include <stddef.h>
+
+#include "policy.h"
+
+#define AG_MAX_KEEP_FDS 64
+
+struct options {
+    char **argv;         /* target argv (NULL-terminated), points into argv[] */
+    int argc;            /* target argc */
+    long timeout_ms;     /* wall-clock deadline for the tree; 0 = none */
+    int keep_fds[AG_MAX_KEEP_FDS];
+    size_t nkeep;
+    const char *workspace;               /* writable root; default cwd */
+    const char *read_paths[AG_MAX_PATHS];
+    size_t nread;
+    const char *write_paths[AG_MAX_PATHS];
+    size_t nwrite;
+    int no_default_reads;                /* drop the system read allowlist */
+    enum ag_net_mode net_mode;           /* AG_NET_NONE (default) or AG_NET_ALL */
+    long long max_fsize;                 /* RLIMIT_FSIZE bytes per file; 0 = unlimited */
+    long long max_nofile;                /* RLIMIT_NOFILE per process; 0 = inherited */
+    const char *policy_path;             /* --policy FILE (Phase 8), or NULL */
+    const char *policy_conflict;         /* first CLI option the policy file also covers */
+    int degraded;        /* AG_MODE_DEGRADED when set, else strict */
+    int verbose;         /* print negotiation + applied layers to stderr */
+    int print_status;    /* print the layer table and exit without running */
+    int json;            /* machine-readable status output */
+    int show_help;
+    int show_version;
+};
+
+/* Parse argv into opts. Returns 0 on success; -1 on a usage error (message
+ * already printed). On --help/--version, sets the flag and returns 0 with no
+ * target required. */
+int options_parse(int argc, char **argv, struct options *opts);
+
+void options_usage(const char *prog);
+
+/* Shared value parsers (CLI and policy file use the same validation).
+ * Seconds (decimals ok) -> ms, or -1. Decimal integer in [min, max], or -1. */
+long options_parse_timeout_ms(const char *s);
+long long options_parse_count(const char *s, long long min, long long max);
+
+#endif

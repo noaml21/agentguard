@@ -1,0 +1,353 @@
+# AgentGuard V2 Architecture
+
+V2 adds `agentguard-run`, a small C launcher that places a target command and its
+whole descendant tree inside kernel-enforced restrictions. V1 hooks stay in place
+as the early-feedback / audit / snapshot layer; V2 is the enforcement layer.
+
+```text
+agentguard-run [options] -- <command> [args...]
+   |
+   | parent (supervisor, unrestricted, owns lifecycle)
+   |   - refuses EUID 0
+   |   - loads + validates policy (opened before fork, from outside the workspace)
+   |   - probes kernel capabilities (AVAILABLE)
+   |   - resolves REQUESTED layers from policy/flags
+   |   - becomes child subreaper; forks
+   |   - reads setup report pipe; forwards signals; enforces deadline; reaps tree
+   |
+   +-- child (setup, then exec)
+         cgroup join -> pgrp/TTY handoff -> close non-kept fds -> rlimits
+         -> no_new_privs -> Landlock restrict_self -> seccomp filter -> execvp
+         (any required step fails => write failure record, _exit; target never runs)
+```
+
+## Measured environment (Phase 0, 2026-09-24)
+
+Collected by `scripts/capability_audit.sh` (unprivileged; no host changes).
+
+| Fact | Value on development host |
+|---|---|
+| Distro / kernel / arch | Ubuntu 24.04.5 LTS, `7.0.0-31-generic` (HWE), x86_64 |
+| Compiler | GCC 13.3.0; no clang, clang-tidy, cppcheck, valgrind |
+| Active LSMs | lockdown, capability, landlock, yama, apparmor, ima, evm |
+| Landlock ABI (runtime) | **8**: FS, REFER, TRUNCATE, TCP bind/connect (port), IOCTL_DEV, scoped abstract-unix + signals (ABI 6), later ABI 7–8 features. **Not** available: pathname-unix mediation (ABI 9), UDP (ABI 10) |
+| seccomp | filter mode available; actions: kill_process kill_thread trap errno user_notif trace log allow |
+| no_new_privs | settable unprivileged |
+| libseccomp | headers absent (installing would be a host change) |
+| Unprivileged user namespaces | `unshare(CLONE_NEWUSER)` succeeds, but AppArmor `apparmor_restrict_unprivileged_userns=1` denies `uid_map` writes and nested net/pid/mount namespace creation (EPERM) — **namespace tier UNAVAILABLE on this host** |
+| Yama ptrace_scope | 1 (ptrace restricted to descendants) |
+| cgroup | v2; current scope is user-writable with `cgroup.kill`; user-owned delegated subtree `user@1000.service` with cpu, memory, pids controllers |
+| close_range / pidfd_open / subreaper | all available |
+
+The runner re-probes at every start; nothing above is hardcoded.
+
+## Privilege model
+
+- Runs as the invoking unprivileged user. Not setuid, never will be.
+- Refuses EUID 0 (including `sudo agentguard-run ...`) with a clear error: as root,
+  Landlock and seccomp still apply but root keeps capabilities (e.g. CAP_SYS_ADMIN,
+  CAP_DAC_OVERRIDE semantics outside Landlock scope, raw sockets, module loading),
+  so the documented guarantees would be wrong. There is no override flag in Core.
+- All restrictions are unprivileged: no_new_privs + Landlock + seccomp. Namespaces are
+  used only if the host permits them unprivileged (not on the development host).
+
+## Enforcement layers
+
+| Layer | Purpose | Requirement |
+|---|---|---|
+| no_new_privs | Blocks setuid/file-capability privilege gain; prerequisite for unprivileged Landlock and seccomp | always required |
+| Landlock FS | Kernel filesystem access control on inode-bound rules | required by default |
+| Landlock net (ABI ≥ 4) | TCP bind/connect restricted **by port only** | not used in Core (see Network modes) |
+| Landlock scope (`landlock_scope`, ABI ≥ 6) | Blocks signals and abstract-unix connects to processes outside the sandbox domain (not pathname sockets) | required by default (Phase 9): strict refuses on ABI < 6; degraded reports it missing |
+| seccomp-BPF | Denies syscalls outside the coding-agent threat envelope; clone-flag filter; socket family filter (`--net none`) | required by default |
+| rlimits | Per-process bounds: core=0 always; `--max-file-size`, `--max-open-files` | core always; others on request |
+| Wall-clock deadline | Tree termination after `--timeout` (lifecycle, Phase 2) | on request |
+| cgroup v2 kill (`cgroup_kill` layer) | Owned child cgroup + `cgroup.kill`: tree kill incl. setsid escapers | opportunistic: used when available, never required; reported |
+
+## Setup order (child, before exec) and why
+
+0. **Join owned cgroup** (Phase 7, when `cgroup_kill` is requested) — write `0` to the
+   pre-opened `cgroup.procs` before anything else (FD sanitation would close that fd); the
+   `cgroup_kill` layer later reports the outcome.
+1. **Process group / TTY handoff** — `setpgid(0,0)`; parent makes the group foreground
+   with `tcsetpgrp` when stdin is a TTY. Needs no restricted syscalls.
+2. **FD sanitation** — `close_range(..., 0)` over gaps between stdio, the report
+   pipe and explicit keeps (fallback: iterate `/proc/self/fd`). Non-kept fds are
+   closed now; only the report pipe closes atomically at exec through CLOEXEC.
+3. **rlimits** — plain `setrlimit`, before Landlock/seccomp; failure refuses the run.
+4. **`PR_SET_NO_NEW_PRIVS`** — must precede `landlock_restrict_self` and seccomp
+   filter installation for an unprivileged process (kernel returns EPERM otherwise).
+5. **Open Landlock rule paths as `O_PATH` fds** during ruleset construction — the
+   kernel resolves each path to an inode; rules bind to that object. Opened before
+   restrict_self and closed after each rule is added.
+6. **Landlock** — create ruleset for the handled access rights the running ABI supports,
+   add rules, `landlock_restrict_self`. Then a second, scope-only ruleset
+   (`scoped = ABSTRACT_UNIX_SOCKET | SIGNAL`, no handled access rights; the attr struct is
+   defined locally because Ubuntu 24.04's UAPI header lacks `scoped`).
+7. **seccomp filter** — last, so the filter never has to permit setup syscalls
+   (landlock_*, prctl, close_range); after it only `execve` remains.
+8. **`execvp`** — the report pipe closes on success (EOF ⇒ parent knows the target
+   started); on any failure the child writes a failure record and `_exit`s.
+
+Invariant: no target code runs before step 8, and step 8 is reached only if every
+required layer reported success.
+
+## seccomp implementation choice (Phase 5, decided)
+
+Options compared:
+
+| | libseccomp | hand-written classic BPF |
+|---|---|---|
+| Security | mature, well-audited rule compiler | small surface, but we own correctness |
+| Dependency/portability | needs `libseccomp-dev` — **absent here**, installing it is a host change | none; only kernel UAPI headers |
+| Readability | high-level API | low-level, but our filter is a flat deny-list |
+| Testability | same (effect tests) | same |
+| Maintenance | external version coupling | a single ~80-line table we control |
+
+**Decision: hand-written classic BPF.** libseccomp headers are not installed and adding
+them is a host change; the Core filter is intentionally small — an arch/x32 guard plus a
+flat deny-list built at runtime from a `SYS_*` table (two BPF instructions per entry). This
+keeps the whole filter readable in one file and adds no dependency. If the deny-list ever
+grew into argument-heavy, arch-specific rules, libseccomp would become the better trade.
+
+The filter is **default-allow with a targeted deny-list** (returns `EPERM`), not
+default-deny: a coding agent runs a huge, open-ended set of ordinary syscalls, so an
+allow-list would be brittle and constantly break real work, while the isolation-relevant
+dangerous syscalls are a short, stable set. Landlock (not seccomp) is the primary
+filesystem boundary; seccomp closes same-UID/escape vectors Landlock does not cover.
+Installed **last** (after Landlock) so the filter never has to permit setup syscalls.
+
+## Process lifecycle
+
+- Parent sets `PR_SET_CHILD_SUBREAPER` so orphaned descendants reparent to it.
+- Child runs in its own process group; parent forwards SIGTERM/SIGHUP/SIGQUIT/SIGINT
+  and SIGWINCH it receives to that group (on a TTY, Ctrl-C reaches the foreground group
+  directly from the kernel).
+- On a TTY the child group is foreground: Ctrl-C and SIGWINCH go to it directly from
+  the kernel; the parent restores the foreground group on exit.
+- After the main child exits: SIGTERM to the group, grace period, SIGKILL, then reap
+  all reparented descendants.
+- Limit (per mode): a descendant that calls `setsid()`/`setpgid()` leaves the group;
+  without a cgroup it does not receive group signals and survives the runner. With the
+  `cgroup_kill` layer applied, teardown writes `cgroup.kill` and it dies (VERIFIED, Phase 7).
+
+## Network modes (Phase 6, implemented)
+
+`--net none|all`, default `none`. The development host has Landlock TCP (port-only), no
+Landlock UDP (ABI 10), and no usable namespaces, so AgentGuard offers **no destination/IP
+filtering and no network-namespace isolation**. The one strong unprivileged primitive is a
+seccomp filter on `socket()`'s address-family argument, which gives all-or-nothing IP
+networking:
+
+| Mode | Mechanism | Effect |
+|---|---|---|
+| `none` (default) | seccomp: `socket()` allowed only for `AF_UNIX` and `AF_NETLINK`; every other family → `EACCES` | No TCP/UDP/raw IP (v4 and v6), no `AF_PACKET`, `AF_VSOCK`, … . Allowlist, so an unanticipated family is denied. AF_UNIX local IPC and netlink queries (interface lists; cannot carry traffic off-host) work. |
+| `all` | no network rule | Host networking as the invoking user (intended for `-- claude`, which needs its API). Other layers unchanged. |
+
+- Enforcement point is socket *creation*, so it covers every protocol and every spelling
+  (python, bash `/dev/tcp`, compiled code) and is inherited by all descendants. `io_uring`
+  (whose `IORING_OP_SOCKET` would bypass per-syscall seccomp) is denied in every mode.
+- There is no `socketcall(2)` on x86_64/aarch64, and the arch guard kills foreign-ABI
+  syscalls, so there is no alternate entry point to `socket()`.
+- `none` depends on the seccomp layer. In strict mode seccomp is required, so an
+  unavailable seccomp refuses the run. In explicit `--degraded` mode the run proceeds but
+  `--status` reports `"network":{"mode":"none","enforced":false}` and every run prints a
+  warning; `none` is never silently downgraded.
+- Landlock TCP port rules (PLAN 6.2) are **not used** in Core: port-only TCP filtering
+  without UDP coverage cannot express a truthful intermediate mode on ABI 8. Deferred.
+- **Residual (historical VERIFIED evidence on the dev host, all modes; accepted, outside
+  V2 Core):** pathname AF_UNIX connections to same-UID host services are not mediated
+  (Landlock pathname-unix control needs ABI 9; the Phase 9 abstract-unix/signal scope does
+  not cover pathname sockets). In Phase 6, from inside `--net none`, `systemd-run --user`
+  over the session D-Bus socket started a process with `Seccomp: 0`, `NoNewPrivs: 0` and
+  working `AF_INET` sockets, i.e. **outside every AgentGuard layer**. Same-host services
+  may also relay traffic (e.g. systemd-resolved DNS). Phase 9 closed by weakening the claim
+  (THREAT_MODEL §4.1): no V2 guarantee holds against an adversary that uses such a
+  service, and status reports `host_ipc.isolation_enforced:false`. The experiment was not
+  re-executed at the final Phase 9 head; no later mechanism mediates the path.
+
+`--status` (text and `--json`) reports the requested network mode and whether it is enforced.
+
+## Resource limits (Phase 7, implemented)
+
+Nothing here is an aggregate resource guarantee except where stated. rlimits are
+**per process**: each descendant inherits its own copy, so N processes may each use the
+full amount.
+
+| Limit | Kernel primitive | Scope | Inheritance / after fork | Effect | When unavailable |
+|---|---|---|---|---|---|
+| Core dumps | `RLIMIT_CORE` = 0, soft = hard | per process | inherited; cannot be raised (hard limit, no CAP_SYS_RESOURCE) | prevents core files (dumps can hold secrets). With Ubuntu's piped `core_pattern` the kernel still starts apport, which honors a 0 limit — ASSUMED, not tested | setrlimit failure refuses the run |
+| `--max-file-size N` | `RLIMIT_FSIZE`, soft = hard | per process, per file | inherited; cannot be raised | a write past N bytes fails (`SIGXFSZ`, default action terminates; `EFBIG` if ignored). **Not a disk quota**: many files/processes can still fill the disk | same |
+| `--max-open-files N` (N ≥ 16) | `RLIMIT_NOFILE`, soft = hard | per process | inherited; cannot be raised | open/socket/pipe past N fails `EMFILE` | same |
+| `--timeout S` | parent monotonic deadline (Phase 2 lifecycle; no second timer) | whole tree | n/a | limits wall-clock time: SIGTERM group → 2 s grace → `cgroup.kill` + SIGKILL group → reap; exit 124 | always available |
+| tree kill | cgroup v2 `cgroup.kill` on an owned child cgroup | aggregate (every process in the cgroup) | children are created in the cgroup; Landlock makes cgroupfs unwritable, so the target cannot migrate out | kills setsid/setpgid escapers at teardown/timeout | layer `cgroup_kill` reported `unavailable`; teardown falls back to process group + subreaper reaping, where setsid escapers survive |
+| process count / memory | — | — | — | **UNAVAILABLE in Core** | reported as `aggregate_limits: "unavailable"` |
+
+Not used, deliberately: `RLIMIT_NPROC` counts every process of the real UID system-wide
+(inside and outside the sandbox), so it is neither a sandbox cap nor safe to set;
+`RLIMIT_AS`/`RLIMIT_CPU` are per-process and would be misread as tree limits.
+
+**cgroup tier design.** The parent reads its cgroup from `/proc/self/cgroup` (v2 only,
+`statfs` magic checked), and the layer is available when that directory and its
+`cgroup.procs` are writable and `cgroup.kill` exists. Per run it `mkdirat`s
+`agentguard-run.<pid>` (fails on `EEXIST`, so it never adopts a directory it did not
+create) and opens its `cgroup.procs`/`cgroup.kill`. The child writes `0` to `cgroup.procs`
+as its very first action, before FD sanitation and before any target code, so every
+descendant is created inside. After teardown the directory is removed. Only the owned
+directory is written: no controllers are enabled and no other process is moved.
+
+**Why no aggregate pids/memory limits.** Setting `pids.max`/`memory.max` on the owned
+cgroup requires the controllers to be enabled in the *parent's* `cgroup.subtree_control`.
+On the dev host the parent is the terminal's `vte-spawn-….scope`: user-owned, with `memory
+pids` available but not delegated to children, and holding 11 unrelated processes. Changing
+it would modify a cgroup AgentGuard does not own, and the cgroup v2 no-internal-process rule
+rejects it anyway. Users who need aggregate limits can start the runner inside a systemd
+scope that sets them (`systemd-run --user --scope -p TasksMax=… -p MemoryMax=…
+agentguard-run …`); systemd enforces that, not AgentGuard.
+
+## Policy file and control-plane integrity (Phase 8, implemented)
+
+`--policy FILE` supplies the settings the CLI otherwise gives; grammar and bounds are
+specified in `sandbox/include/policyfile.h` (parser: `src/policyfile.c`).
+
+- **Format**: ASCII lines, exactly `key = value`, `version = 1` first, `#` comments and
+  blank lines. Keys: `workspace` (required), `read`, `write` (repeatable),
+  `default-reads = yes|no`, `net = none|all`, `timeout`, `max-file-size`,
+  `max-open-files`. Values are verbatim to end of line (paths may contain spaces); no
+  quoting, escapes, env expansion, globbing, includes. Paths must be absolute and
+  normalized (no empty/`.`/`..` components, no trailing `/`; `/` never writable). Unknown
+  or duplicate keys, empty values, tabs/CR/NUL/control/non-ASCII bytes, >64 KiB, >1024
+  lines, >64 paths per list, over-long lines, out-of-range numbers, duplicate paths, a path
+  both read and written, or a write path equal to the workspace are errors. Errors print a
+  line number and a fixed message, never the value.
+- **One representation**: the parser fills the same `struct options` as the CLI, using the
+  same numeric parsers (`options_parse_timeout_ms`, `options_parse_count`);
+  `ag_policy_from_options` is the single place that turns options into the enforced
+  `ag_policy` (used by the child and by the integrity checks).
+- **Precedence**: none. A setting the policy covers may not also be given on the CLI
+  (`--workspace`, `--allow-read`, `--allow-write`, `--no-default-reads`, `--net`,
+  `--timeout`, `--max-file-size`, `--max-open-files` → exit 125). Only non-policy flags
+  (`--status`, `--json`, `--verbose`, `--keep-fd`, `--strict`, `--degraded`) combine.
+- **Opened safely, before fork**: the `--policy` path must equal its `realpath` (absolute,
+  no symlinks anywhere). The parent opens the directory `O_PATH|O_NOFOLLOW`, then the file
+  `openat(…, O_NOFOLLOW)`, requires a regular file owned by the user or root and not
+  group/world-writable, and parses the bytes read from that fd. The child never opens it.
+- **Location check by inode**: using the *effective* writable roots of this run (workspace,
+  `write` paths, `/tmp` when default reads are on), the parent compares device+inode of the
+  policy file and of every ancestor directory (walked with `openat("..")` from the open
+  dirfd) against each root. Any match refuses the run: the target could overwrite, rename,
+  or replace the policy for the next run.
+- **Runner binary**: the same check runs on `/proc/self/exe`. In policy mode a runner
+  inside a writable root refuses the run; in CLI mode it is only reported
+  (`"control":{"runner_in_writable_root":…}`), because the common dev layout (workspace =
+  repository containing the build) would otherwise stop working.
+
+Landlock is what actually prevents modification; the checks make sure the protected
+objects are outside everything Landlock grants.
+
+## seccomp argument filters (Phase 6 additions)
+
+The Phase 5 deny-list stays flat; Phase 6 added three small hand-computed blocks after it:
+
+1. `clone3` → `ENOSYS`. Its flags live in a user-memory struct seccomp cannot read. glibc
+   (`pthread_create`, `posix_spawn`) and other runtimes treat `ENOSYS` as "old kernel" and
+   fall back to `clone()`.
+2. `clone()` with any `CLONE_NEW*` bit (`NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|NEWNET`,
+   mask `0x7E020000`) → `EPERM`. `fork`/threads pass (no namespace bits). Together with the
+   existing `unshare`/`setns` denials and (1), no namespace can be created or joined via these
+   syscalls; `CLONE_NEWTIME` is only expressible through `clone3`/`unshare`.
+3. `socket()` family allowlist in `--net none` (above).
+
+Phase 9 adds a fourth block (all modes): `prlimit64` with a nonzero pid → `EPERM`, so the
+target can query/set only its own limits (glibc `getrlimit`/`setrlimit`, bash `ulimit`, python
+`resource` and util-linux `prlimit CMD` all pass pid 0 — measured).
+
+New deny-list entries: `fsopen`, `fsconfig`, `fsmount` (new mount API), `pidfd_getfd`
+(steal an fd from another same-UID process), `syslog` (kernel log), `io_uring_setup/enter/
+register` (io_uring operations bypass per-syscall filtering).
+
+## Phase 9 continuation: SysV IPC and honest host-IPC status
+
+SysV object IDs live in the host IPC namespace, independently of filesystem grants.
+The seccomp deny-list now rejects `shmget/shmat/shmctl`,
+`semget/semop/semtimedop/semctl`, and `msgget/msgsnd/msgrcv/msgctl` with EPERM.
+`shmdt` remains allowed because it only releases a mapping. These rules apply in both
+network modes; explicit degraded mode without seccomp loses them. This deliberately
+excludes SysV-dependent applications, while ordinary pipes/socketpairs and the existing
+developer workflows continue to work.
+
+A **test-only** filter evaluates denying `socket(AF_UNIX)` plus datagram `socketpair`
+(including type flags). Datagram socketpairs can send to a pathname socket, so merely
+denying `socket(AF_UNIX)` is insufficient. The candidate blocks fixture STREAM, DGRAM,
+SEQPACKET and socketpair-DGRAM traffic. It also breaks Python multiprocessing.Manager;
+therefore it is not installed or exposed as a runtime mode. This is the canonical
+compatibility-preserving fallback: explicitly report the missing guarantee. Host-IPC
+isolation is false in status, including strict mode; help explains strict's limited
+meaning. Phase 9 closed on this basis (PLAN scope rule: weaken the claim): pathname
+AF_UNIX host services are a documented, reported residual, not a Core guarantee.
+
+JSON adds `host_ipc` with `isolation_enforced:false`,
+`pathname_unix:"unrestricted"`, `sysv_denied` derived from effective seccomp state, and
+`inherited_fds:"stdio-and-explicit-keeps"`. Pre-run network/SysV status requires both
+availability and request; strict status with an unavailable seccomp no longer claims
+enforcement just because the layer was requested. Post-run uses the reported applied mask.
+
+FD sanitation closes non-kept descriptors before setup (report pipe stays CLOEXEC).
+Its sorted array now holds stdio **plus the report pipe plus all 64 user keeps**.
+The prior array held only 63 user keeps, closing the last one and refusing setup.
+The memory/process, inherited-fd, SysV, socket and compatibility evidence is in
+`sandbox/tests/hostipc_extended_test.py`; surface classifications and remaining gaps are
+in THREAT_MODEL §6. In particular AF_NETLINK, default `/dev` reads and `/dev/pts` writes
+are not complete host-IPC isolation. The historical session-D-Bus escape remains an
+accepted, reported residual (THREAT_MODEL §4.1); it was not re-executed at the final head.
+
+The continued inventory found that Landlock does not block same-UID scheduling setters.
+`prlimit64`'s pid-zero rule is now a shared five-instruction block used also for
+`sched_setparam`, `sched_setscheduler`, `sched_setaffinity`, and `sched_setattr`.
+Each reloads the syscall number before inspecting the low 32-bit pid_t argument.
+Seven-instruction blocks for `setpriority` and `ioprio_set` additionally require the
+single-process selector and who=0; group/UID selectors cannot target outside processes.
+Explicit PIDs/TIDs are rejected even for the caller or its descendants; common
+nice/taskset/chrt/ionice command launches still work. This is narrower than a namespace:
+it does not support manipulating other sandbox threads by TID.
+
+POSIX message-queue fixtures needed no new runtime rule: current Landlock domains deny
+opens for send/receive; both baseline and a run without Landlock can operate on the same
+exclusively created queue. Effects are checked by receiving from outside, with every
+fixture queue closed/unlinked by its owner. Do not generalize this to untested queue
+operations, policies, or kernel ABIs.
+
+## V1 + V2 integration (Phase 10)
+
+The two layers answer different questions and have different threat boundaries:
+
+| | V1 workflow guardrails (`.claude/settings.json` hooks) | V2 runtime enforcement (`agentguard-run`) |
+|---|---|---|
+| Sees | the *text* of each Claude tool request (Bash command, file path) | the *effect* of every syscall of the agent and all descendants |
+| Decides with | regex firewall, canonical path policy, commit policy, rate limit | Landlock, seccomp, no_new_privs, rlimits, deadline/cgroup kill |
+| Good at | early, explainable feedback; audit log; pre-change snapshots; workflow conventions (commit messages, syntax checks) | denying outside-workspace reads/writes, IP networking (`--net none`), outside signals/ptrace, namespace/mount/bpf/io_uring, regardless of spelling |
+| Known limits | any equivalent spelling, interpreter, indirection (Phase 1: 11 bypasses) | claims only what THREAT_MODEL §4 verifies; documented residuals include same-UID host services over pathname AF_UNIX, shared default grants (`/tmp`), and everything inside the granted workspace |
+| Runs | inside the agent process tree (hooks are child processes of Claude Code) | as the supervisor *outside* the restricted tree |
+
+Composition: `agentguard-agent` (or `agentguard-run … -- claude`) starts Claude Code inside
+V2; Claude Code then runs the V1 hooks as its own children, so the hooks are themselves
+sandboxed and keep working (the V1 suite passes 40/40 under the runner). V1 state
+(`.agentguard/`) lives in the workspace, which is writable.
+
+Consequence to state plainly: **V1's control plane is not protected by V2 when the
+repository is the workspace.** The sandboxed agent may edit `.claude/settings.json`,
+`agentguard/hooks/` or V1 state through Bash — exactly the V1 bypass class — because the
+whole workspace is granted. V2's own control plane (the policy file and an installed
+runner) is outside every writable root and protected (Phase 8). V1 remains a
+cooperative-agent UX layer; V2 is the boundary.
+
+`sandbox/scripts/agentguard-agent [runner options] [-- COMMAND …]` is a ~40-line wrapper,
+not a new mechanism. It computes the recipe and `exec`s the runner: workspace = enclosing
+git repository (else cwd); `--net ${AGENTGUARD_NET:-all}` (an API agent needs egress; there
+is no destination filtering); `--allow-read` the directory of the agent's resolved
+executable (agents installed under `$HOME` must be able to start); `--allow-write` each
+*existing* agent state path (`~/.claude`, `~/.claude.json`, plus
+`$AGENTGUARD_AGENT_WRITE`). User options are appended after the recipe and can override it.
+The agent state paths are deliberately writable authority: the agent can modify its own
+configuration (including hooks configured there). `make -C sandbox install` installs the
+runner and wrapper into `~/.local/bin`, outside the workspace, which policy mode requires.

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# agentguard-agent: run a coding agent (default: claude) under agentguard-run.
+#
+#   agentguard-agent [agentguard-run options] [-- COMMAND [ARGS...]]
+#
+# The recipe, spelled out (nothing here is hidden enforcement; the kernel
+# restrictions all come from agentguard-run):
+#   --workspace   the enclosing git repository, else the current directory
+#   --net         $AGENTGUARD_NET, default "all" (an API-backed agent needs egress;
+#                 there is no destination filtering -- use "none" for offline agents)
+#   --allow-read  the directory holding the agent's resolved executable, so agents
+#                 installed under $HOME (e.g. ~/.local/share, ~/.nvm) can start
+#   --allow-write each EXISTING agent state path: ~/.claude, ~/.claude.json, plus
+#                 colon-separated $AGENTGUARD_AGENT_WRITE entries
+# Options given before '--' are passed to agentguard-run after the recipe, so they
+# can add paths or override --net/--workspace. Everything else in $HOME stays
+# unreadable and unwritable.
+set -euo pipefail
+
+runner="${AGENTGUARD_RUN:-}"
+if [[ -z "$runner" ]]; then
+    here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    if [[ -x "$here/agentguard-run" ]]; then
+        runner="$here/agentguard-run"
+    else
+        runner="$(command -v agentguard-run)" ||
+            { echo "agentguard-agent: agentguard-run not found (set AGENTGUARD_RUN)" >&2; exit 125; }
+    fi
+fi
+
+extra=()
+while [[ $# -gt 0 && "$1" != "--" ]]; do extra+=("$1"); shift; done
+[[ $# -gt 0 ]] && shift
+cmd=("$@")
+[[ ${#cmd[@]} -eq 0 ]] && cmd=(claude)
+
+exe="$(command -v -- "${cmd[0]}")" ||
+    { echo "agentguard-agent: command not found: ${cmd[0]}" >&2; exit 127; }
+real="$(readlink -f -- "$exe")"
+
+workspace="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+args=(--workspace "$workspace" --net "${AGENTGUARD_NET:-all}" --allow-read "$(dirname -- "$real")")
+
+state=("$HOME/.claude" "$HOME/.claude.json")
+if [[ -n "${AGENTGUARD_AGENT_WRITE:-}" ]]; then
+    IFS=: read -r -a more <<< "$AGENTGUARD_AGENT_WRITE"
+    state+=("${more[@]}")
+fi
+for p in "${state[@]}"; do
+    [[ -n "$p" && -e "$p" ]] && args+=(--allow-write "$p")
+done
+
+exec "$runner" "${args[@]}" "${extra[@]}" -- "${cmd[@]}"

@@ -1,0 +1,274 @@
+#include "options.h"
+#include "util.h"
+
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void options_usage(const char *prog)
+{
+    fprintf(stderr,
+        "Usage: %s [options] -- command [args...]\n"
+        "\n"
+        "Run command inside AgentGuard's sandbox. The target argv after '--'\n"
+        "is executed directly (no shell).\n"
+        "\n"
+        "Options:\n"
+        "  --timeout SECONDS   Terminate the process tree after SECONDS (float ok).\n"
+        "  --keep-fd N         Preserve inherited file descriptor N in the target\n"
+        "                      (besides stdin/stdout/stderr). May repeat.\n"
+        "  --workspace DIR     Writable root for the target (default: cwd).\n"
+        "  --allow-read PATH   Additionally allow read+execute under PATH. Repeat.\n"
+        "  --allow-write PATH  Additionally allow read+write under PATH. Repeat.\n"
+        "  --no-default-reads  Do not allow the default system read locations.\n"
+        "  --net none|all      none (default): deny all IP networking (TCP/UDP/raw);\n"
+        "                      all: allow host networking (intentional egress).\n"
+        "  --max-file-size N   Per-process RLIMIT_FSIZE: no process may write a file\n"
+        "                      past N bytes (not a disk quota).\n"
+        "  --max-open-files N  Per-process RLIMIT_NOFILE (N >= 16).\n"
+        "  --policy FILE       Read workspace/read/write/default-reads/net/timeout/\n"
+        "                      limits from FILE (absolute, canonical, outside every\n"
+        "                      writable root). Cannot be combined with those flags.\n"
+        "  --strict            Refuse to run unless every required layer applies\n"
+        "                      (default). Does not guarantee host IPC isolation:\n"
+        "                      pathname Unix services remain reachable.\n"
+        "  --degraded          Run even if a required layer is unavailable, and\n"
+        "                      report exactly which guarantees are missing.\n"
+        "  --status            Print the enforcement-layer table and exit.\n"
+        "  --json              With --status, emit machine-readable JSON.\n"
+        "  --verbose           Print applied enforcement layers to stderr.\n"
+        "  --version           Print version and exit.\n"
+        "  --help              Print this help and exit.\n",
+        prog);
+}
+
+/* Parse a non-negative integer fd in [0, INT_MAX]. Returns -1 on error. */
+static int parse_fd(const char *s)
+{
+    if (!s || !*s)
+        return -1;
+    char *end = NULL;
+    errno = 0;
+    long v = strtol(s, &end, 10);
+    if (errno != 0 || *end != '\0' || v < 0 || v > INT_MAX)
+        return -1;
+    return (int)v;
+}
+
+/* Parse seconds (accepts decimals) into milliseconds. Returns -1 on error. */
+long options_parse_timeout_ms(const char *s)
+{
+    if (!s || !*s)
+        return -1;
+    char *end = NULL;
+    errno = 0;
+    double sec = strtod(s, &end);
+    if (errno != 0 || *end != '\0' || !(sec >= 0 && sec <= 1e7)) /* also rejects nan */
+        return -1;
+    return (long)(sec * 1000.0);
+}
+
+/* Parse a decimal integer in [min, max]. Returns -1 on error. */
+long long options_parse_count(const char *s, long long min, long long max)
+{
+    if (!s || *s < '0' || *s > '9')
+        return -1;
+    char *end = NULL;
+    errno = 0;
+    long long v = strtoll(s, &end, 10);
+    if (errno != 0 || *end != '\0' || v < min || v > max)
+        return -1;
+    return v;
+}
+
+int options_parse(int argc, char **argv, struct options *opts)
+{
+    memset(opts, 0, sizeof *opts);
+    opts->timeout_ms = 0;
+
+    int i = 1;
+    for (; i < argc; i++) {
+        const char *arg = argv[i];
+        if (strcmp(arg, "--") == 0) {
+            i++;
+            break;
+        }
+        if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
+            opts->show_help = 1;
+            return 0;
+        }
+        if (strcmp(arg, "--version") == 0) {
+            opts->show_version = 1;
+            return 0;
+        }
+        if (strcmp(arg, "--strict") == 0) {
+            opts->degraded = 0;
+            continue;
+        }
+        if (strcmp(arg, "--degraded") == 0) {
+            opts->degraded = 1;
+            continue;
+        }
+        if (strcmp(arg, "--status") == 0) {
+            opts->print_status = 1;
+            continue;
+        }
+        if (strcmp(arg, "--json") == 0) {
+            opts->json = 1;
+            continue;
+        }
+        if (strcmp(arg, "--verbose") == 0) {
+            opts->verbose = 1;
+            continue;
+        }
+        if (strcmp(arg, "--workspace") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--workspace";
+            if (++i >= argc) {
+                ag_warnf("--workspace requires an argument");
+                return -1;
+            }
+            opts->workspace = argv[i];
+            continue;
+        }
+        if (strcmp(arg, "--allow-read") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--allow-read";
+            if (++i >= argc) {
+                ag_warnf("--allow-read requires an argument");
+                return -1;
+            }
+            if (opts->nread >= AG_MAX_PATHS) {
+                ag_warnf("too many --allow-read paths (max %d)", AG_MAX_PATHS);
+                return -1;
+            }
+            opts->read_paths[opts->nread++] = argv[i];
+            continue;
+        }
+        if (strcmp(arg, "--allow-write") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--allow-write";
+            if (++i >= argc) {
+                ag_warnf("--allow-write requires an argument");
+                return -1;
+            }
+            if (opts->nwrite >= AG_MAX_PATHS) {
+                ag_warnf("too many --allow-write paths (max %d)", AG_MAX_PATHS);
+                return -1;
+            }
+            opts->write_paths[opts->nwrite++] = argv[i];
+            continue;
+        }
+        if (strcmp(arg, "--no-default-reads") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--no-default-reads";
+            opts->no_default_reads = 1;
+            continue;
+        }
+        if (strcmp(arg, "--net") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--net";
+            if (++i >= argc) {
+                ag_warnf("--net requires an argument (none|all)");
+                return -1;
+            }
+            if (strcmp(argv[i], "none") == 0) {
+                opts->net_mode = AG_NET_NONE;
+            } else if (strcmp(argv[i], "all") == 0) {
+                opts->net_mode = AG_NET_ALL;
+            } else {
+                ag_warnf("invalid --net value: %s (expected none|all)", argv[i]);
+                return -1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--max-file-size") == 0 || strcmp(arg, "--max-open-files") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = arg;
+            int fsize = arg[6] == 'f';
+            if (++i >= argc) {
+                ag_warnf("%s requires an argument", arg);
+                return -1;
+            }
+            long long v = fsize ? options_parse_count(argv[i], 1, LLONG_MAX)
+                                : options_parse_count(argv[i], 16, 1 << 20);
+            if (v < 0) {
+                ag_warnf("invalid %s value: %s", arg, argv[i]);
+                return -1;
+            }
+            if (fsize)
+                opts->max_fsize = v;
+            else
+                opts->max_nofile = v;
+            continue;
+        }
+        if (strcmp(arg, "--timeout") == 0) {
+            if (!opts->policy_conflict)
+                opts->policy_conflict = "--timeout";
+            if (++i >= argc) {
+                ag_warnf("--timeout requires an argument");
+                return -1;
+            }
+            opts->timeout_ms = options_parse_timeout_ms(argv[i]);
+            if (opts->timeout_ms < 0) {
+                ag_warnf("invalid --timeout value: %s", argv[i]);
+                return -1;
+            }
+            continue;
+        }
+        if (strcmp(arg, "--keep-fd") == 0) {
+            if (++i >= argc) {
+                ag_warnf("--keep-fd requires an argument");
+                return -1;
+            }
+            int fd = parse_fd(argv[i]);
+            if (fd < 0) {
+                ag_warnf("invalid --keep-fd value: %s", argv[i]);
+                return -1;
+            }
+            if (fd <= 2) {
+                /* stdio is always preserved; ignore rather than error. */
+                continue;
+            }
+            if (opts->nkeep >= AG_MAX_KEEP_FDS) {
+                ag_warnf("too many --keep-fd options (max %d)", AG_MAX_KEEP_FDS);
+                return -1;
+            }
+            opts->keep_fds[opts->nkeep++] = fd;
+            continue;
+        }
+        if (strcmp(arg, "--policy") == 0) {
+            if (++i >= argc) {
+                ag_warnf("--policy requires an argument");
+                return -1;
+            }
+            if (opts->policy_path) {
+                ag_warnf("--policy given more than once");
+                return -1;
+            }
+            opts->policy_path = argv[i];
+            continue;
+        }
+        if (arg[0] == '-' && arg[1] != '\0') {
+            ag_warnf("unknown option: %s", arg);
+            return -1;
+        }
+        /* A bare word before '--' is a usage error: require the separator so the
+         * boundary between our options and the target is always explicit. */
+        ag_warnf("expected '--' before the command (got '%s')", arg);
+        return -1;
+    }
+
+    if (i >= argc) {
+        /* --status may be used without a target to inspect this host. */
+        if (opts->print_status)
+            return 0;
+        ag_warnf("no command given after '--'");
+        return -1;
+    }
+    opts->argv = &argv[i];
+    opts->argc = argc - i;
+    return 0;
+}
