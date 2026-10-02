@@ -545,3 +545,14 @@ updated. Earlier entries in this log keep the paths that were current when writt
 README shortened to a landing page; `docs/README.md` split into V2 reference, V1, and
 engineering history; build report wording tightened (policy-mode scope of the runner
 location check, `$HOME` outside the workspace). No claim was broadened.
+
+## 2026-10-02 — Post-merge presentation (documentation and metadata only)
+
+PR #1 merged `v2/kernel-sandbox` into `main` (merge commit `b24ed9c`). Branch
+`docs/post-merge-presentation` from `origin/main`: README, build report and BUILD_STATE now
+say V2 is on `main` (runner still reports `2.0.0-rc.1`, no tag yet); CI badge points at
+`main`; MIT `LICENSE` added; `.gitattributes` excludes test suites and red-team harnesses
+(`sandbox/tests/**`, `tests/**`, `redteam/*.py`) from GitHub language statistics with
+`linguist-detectable=false`. No sandbox code, test or CI change. Verified on the dev host
+(kernel 7.0.0-38): `tests/run_tests.sh` 40/40; `make -C sandbox check` 226/226 (210 shell +
+16 python, 0 skipped); Markdown links valid; `git diff --check` clean.

@@ -1,7 +1,8 @@
 # Build State (resume pointer)
 
-- **Branch**: `v2/kernel-sandbox`. Never merge to `main`, tag, or release without user approval.
-- **Status**: **Phases 0–12 COMPLETE. V2 release candidate `2.0.0-rc.1` verified.**
+- **Branch**: `main`. V2 merged via PR #1 (merge commit `b24ed9c`, 2026-10-02);
+  `v2/kernel-sandbox` is kept. Tags and releases are created by the maintainer.
+- **Status**: **Phases 0–12 COMPLETE. V2 on `main`; runner version `2.0.0-rc.1`; not tagged.**
 - **Implementation commit**: `5a93443` (last code/test/CI change). Later commits on the
   branch only update this file and BUILD_LOG/README evidence; their own CI run is the
   branch head's run in GitHub Actions.
@@ -26,8 +27,8 @@
 - **Docs layout**: `docs/v2/` current reference (incl. WALKTHROUGH), `docs/v1/` V1 threat
   model, `docs/process/` history; map in `docs/README.md`.
 - **Running operations**: none. Worktree clean after the final commit.
-- **Next action**: optional PR from `v2/kernel-sandbox` to `main`, merge, and a `v2.0.0`
-  tag/release — only with explicit user approval.
+- **Next action**: maintainer creates the `v2.0.0` tag and GitHub release. The runner's
+  `--version` string is still `2.0.0-rc.1` (`sandbox/src/main.c` and its test).
 - **Running checks**: `./tests/run_tests.sh`; `python3 redteam/run_v1.py`;
   `make -C sandbox check`; `make -C sandbox check-asan`; `python3 redteam/run_v2.py`;
   `bash scripts/capability_audit.sh`.

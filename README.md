@@ -1,6 +1,6 @@
 # AgentGuard
 
-[![CI](https://github.com/noaml21/agentguard/actions/workflows/ci.yml/badge.svg?branch=v2%2Fkernel-sandbox)](https://github.com/noaml21/agentguard/actions/workflows/ci.yml)
+[![CI](https://github.com/noaml21/agentguard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/noaml21/agentguard/actions/workflows/ci.yml)
 
 AgentGuard runs AI coding agents on Linux behind two layers: workflow guardrails that
 inspect each tool request, and a kernel-enforced sandbox around the agent's whole process tree.
@@ -12,8 +12,8 @@ inspect each tool request, and a kernel-enforced sandbox around the agent's whol
 | Provides | command and file policy, snapshots, commit checks, audit log | filesystem, network and same-UID restrictions applied by the kernel |
 | Limit | re-spelling a command bypasses it (11 of 20 corpus cases) | see [Limitations](#limitations) |
 
-V1 gives early, readable feedback to a cooperative agent. V2 is the boundary. Current
-state: release candidate `2.0.0-rc.1` on `v2/kernel-sandbox`, not yet merged or tagged.
+V1 gives early, readable feedback to a cooperative agent. V2 is the boundary. V2 is
+merged on `main`; the runner reports version `2.0.0-rc.1` and no release has been tagged yet.
 
 ## What V2 enforces
 
@@ -102,3 +102,7 @@ redteam/    effect-based attack corpus, V1/V2 drivers, committed results
 agentguard/ V1 hooks and policy;  scripts/  hook dispatcher, capability audit
 tests/      V1 test suite;        docs/     v2/ reference, v1/, process/ history
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
